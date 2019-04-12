@@ -295,6 +295,7 @@ class KernelInliner(SubstitutionMapper):
                 for idx, tag in zip(outer_indices, callee_arg.dim_tags))
 
             from loopy.isl_helpers import simplify_via_aff
+            from loopy.symbolic import simplify_using_aff
             flatten_index = simplify_via_aff(flatten_index)
 
             new_indices = []
@@ -303,7 +304,8 @@ class KernelInliner(SubstitutionMapper):
                 flatten_index -= (dim_tag.stride * ind)
                 new_indices.append(ind)
 
-            new_indices = tuple(simplify_via_aff(i) for i in new_indices)
+            new_indices = tuple(simplify_using_aff(self.caller, i) for i in
+                    new_indices)
 
             return aggregate.index(tuple(new_indices))
         else:

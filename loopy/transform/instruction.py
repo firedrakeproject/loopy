@@ -28,6 +28,9 @@ from loopy.diagnostic import LoopyError
 from loopy.kernel import LoopKernel
 from loopy.kernel.function_interface import (ScalarCallable, CallableKernel)
 from loopy.program import Program, iterate_over_kernels_if_given_program
+from loopy.tools import natsorted
+from pymbolic.primitives import (Variable, Subscript)
+from loopy.kernel.instruction import MultiAssignmentBase
 
 
 # {{{ find_instructions
@@ -384,6 +387,50 @@ def uniquify_instruction_ids(kernel):
     return kernel.copy(instructions=new_instructions)
 
 # }}}
+
+
+def remove_unnecessary_deps(kernel):
+
+    ordered_insn_ids = set()
+    insn_order = []
+
+    def insert_insn_into_order(insn):
+        if insn.id in ordered_insn_ids:
+            return
+        ordered_insn_ids.add(insn.id)
+
+        for dep_id in natsorted(insn.depends_on):
+            insert_insn_into_order(kernel.id_to_insn[dep_id])
+
+        insn_order.append(insn)
+
+    for insn in kernel.instructions:
+        insert_insn_into_order(insn)
+
+    new_insns = insn_order.copy()
+
+    for i, source_insn in enumerate(insn_order):
+        if isinstance(source_insn, MultiAssignmentBase):
+            written_var = source_insn.assignee
+            if isinstance(written_var, Variable):
+                written_var_name = written_var.name
+            else:
+                assert isinstance(written_var, Subscript)
+                written_var_name = written_var.aggregate.name
+
+            for j, sink_insn in enumerate(insn_order[i+1:]):
+                if written_var_name in sink_insn.read_dependency_names():
+                    assert new_insns[j+i+1].id == sink_insn.id
+                    new_insns[j+1+i] = new_insns[j+1+i].copy(
+                            depends_on=(new_insns[j+1+i].depends_on
+                                | frozenset([source_insn.id])))
+                else:
+                    assert new_insns[j+i+1].id == sink_insn.id
+                    new_insns[j+1+i] = new_insns[j+1+i].copy(
+                            depends_on=(new_insns[j+1+i].depends_on
+                                - frozenset([source_insn.id])))
+
+    return kernel.copy(instructions=new_insns)
 
 
 # vim: foldmethod=marker

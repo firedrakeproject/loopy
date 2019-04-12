@@ -1817,4 +1817,34 @@ def add_inames_to_insn(knl, inames, insn_match):
 # }}}
 
 
+def simplify_domain_by_independent_instructions(kernel, withins):
+    from loopy.match import parse_match
+    grouped_insns = [[]for _ in withins]
+    withins = [parse_match(within) for within in withins]
+    for insn in kernel.instructions:
+        for i, within in enumerate(withins):
+            if within(kernel, insn):
+                grouped_insns[i].append(insn)
+    grouped_within_inames = [
+            frozenset().union(*(insn.within_inames for
+                insn in insn_group)) for insn_group in grouped_insns]
+    domains = kernel.domains
+    assert len(domains) == 1
+
+    new_domains = []
+    # now just project out all the rest in this one.
+    # Yay. Does not look too bad, right now.
+    for iname_group in grouped_within_inames:
+        all_inames = kernel.all_inames()
+        dom = kernel.domains[0].copy()
+        inames_to_be_projected_out = all_inames - iname_group
+        for iname in inames_to_be_projected_out:
+            dt, idx = dom.get_var_dict()[iname]
+            dom = dom.project_out(dt, idx, 1)
+
+        new_domains.append(dom)
+
+    return kernel.copy(domains=new_domains)
+
+
 # vim: foldmethod=marker

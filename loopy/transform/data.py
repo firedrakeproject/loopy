@@ -30,6 +30,8 @@ from islpy import dim_type
 from loopy.kernel.data import ImageArg
 
 from pytools import MovedFunctionDeprecationWrapper
+from pymbolic.primitives import Subscript, Variable
+from loopy.symbolic import (IdentityMapper, simplify_using_aff)
 from loopy.program import Program, iterate_over_kernels_if_given_program
 from loopy.kernel import LoopKernel
 from loopy.kernel.function_interface import CallableKernel, ScalarCallable
@@ -798,6 +800,133 @@ def reduction_arg_to_subst_rule(knl, inames, insn_match=None, subst_rule_name=No
             substitutions=substs)
 
 # }}}
+
+
+class AxesRemovingMapper(IdentityMapper):
+    def __init__(self, tv_to_removable_axes):
+        self.tv_to_removable_axes = tv_to_removable_axes
+
+    def map_subscript(self, expr):
+        removable_indices = self.tv_to_removable_axes.get(expr.aggregate.name,
+                None)
+
+        if removable_indices:
+            assert all(expr.index_tuple[idx] == 0 for idx in removable_indices)
+            new_expr = Subscript(expr.aggregate, tuple(self.rec(idx) for i, idx
+                in enumerate(expr.index_tuple) if i not in
+                removable_indices))
+
+            return new_expr
+
+        return super(AxesRemovingMapper, self).map_subscript(expr)
+
+
+def remove_unused_axes_in_temporaries(kernel):
+    new_temps = {}
+    tv_x_removable_axes = {}
+    for tv in kernel.temporary_variables.values():
+        removable_axes = tuple(i for i, axis_len in enumerate(tv.shape) if
+                axis_len == 1)
+        if removable_axes:
+            tv_x_removable_axes[tv.name] = removable_axes
+            new_temps[tv.name] = tv.copy(shape=tuple(axis_len for axis_len in
+                tv.shape if axis_len != 1),
+                dim_tags=None)
+        else:
+            new_temps[tv.name] = tv
+
+    new_insns = []
+    axes_removing_mapper = AxesRemovingMapper(tv_x_removable_axes)
+
+    for insn in kernel.instructions:
+        new_insns.append(insn.with_transformed_expressions(axes_removing_mapper))
+
+    return kernel.copy(instructions=new_insns, temporary_variables=new_temps)
+
+
+class FlattenMapper(IdentityMapper):
+    def __init__(self, var_name, strides):
+        self.var_name = var_name
+        self.strides = strides
+
+    def map_subscript(self, expr):
+        if expr.aggregate.name == self.var_name:
+            new_idx = sum(stride*idx for stride, idx in zip(self.strides,
+                expr.index_tuple))
+            return Subscript(expr.aggregate, (new_idx, ))
+        return super(FlattenMapper, self).map_subscript(expr)
+
+
+def flatten_variable(kernel, var_name):
+    import numpy as np
+    old_tv = kernel.temporary_variables[var_name]
+    strides = tuple(dim_tag.stride for dim_tag in old_tv.dim_tags)
+    flattener = FlattenMapper(var_name, strides)
+
+    new_temps = kernel.temporary_variables.copy()
+    new_temps[var_name] = old_tv.copy(
+            shape=np.prod(old_tv.shape), dim_tags=None, dim_names=None,
+            strides=None)
+
+    kernel = kernel.copy(
+            instructions=[insn.with_transformed_expressions(flattener) for
+                insn in kernel.instructions],
+            temporary_variables=new_temps)
+
+    return kernel
+
+
+class SimplifyMapper(IdentityMapper):
+    def __init__(self, kernel, var_name):
+        self.kernel = kernel
+        self.var_name = var_name
+
+    def map_subscript(self, expr):
+        if expr.aggregate.name == self.var_name:
+            return Subscript(expr.aggregate, tuple(
+                simplify_using_aff(self.kernel, idx) for idx in
+                expr.index_tuple))
+        return super(SimplifyMapper, self).map_subscript(expr)
+
+
+def simplify_index_expression_in_subscript(kernel, var_name):
+    simplifier = SimplifyMapper(kernel, var_name)
+    kernel = kernel.copy(
+            instructions=[insn.with_transformed_expressions(simplifier) for
+                insn in kernel.instructions],)
+    return kernel
+
+
+class NameChangingMapper(IdentityMapper):
+    def __init__(self, absorber_name, absorbee_name):
+        self.absorber_name = absorber_name
+        self.absorbee_name = absorbee_name
+
+    def map_subscript(self, expr):
+        if expr.aggregate.name == self.absorbee_name:
+            return Subscript(Variable(self.absorber_name), expr.index_tuple)
+        return super(NameChangingMapper, self).map_subscript(expr)
+
+
+def absorb_temporary_into(kernel, absorber, absorbee):
+    absorber_tv = kernel.temporary_variables[absorber]
+    absorbee_tv = kernel.temporary_variables[absorbee]
+
+    assert len(absorber_tv.shape) == 1
+    assert len(absorbee_tv.shape) == 1
+    assert absorbee_tv.shape[0] <= absorber_tv.shape[0]
+
+    new_temps = kernel.temporary_variables
+    del new_temps[absorbee]
+
+    name_changer = NameChangingMapper(absorber_tv.name, absorbee_tv.name)
+
+    kernel = kernel.copy(
+            instructions=[insn.with_transformed_expressions(name_changer) for
+                insn in kernel.instructions],
+            temporary_variables=new_temps)
+
+    return kernel
 
 
 # vim: foldmethod=marker

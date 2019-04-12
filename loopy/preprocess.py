@@ -1189,7 +1189,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
         base_iname_deps = outer_insn_inames - frozenset(expr.inames)
 
         neutral = expr.operation.neutral_element(*arg_dtypes)
-        init_id = insn_id_gen("%s_%s_init" % (insn.id, red_iname))
+        init_id = "red_init_%s_%s" % (red_iname, insn.id)
         init_insn = make_assignment(
                 id=init_id,
                 assignees=tuple(
@@ -1203,7 +1203,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
                 )
         generated_insns.append(init_insn)
 
-        init_neutral_id = insn_id_gen("%s_%s_init_neutral" % (insn.id, red_iname))
+        init_neutral_id = "red_init_neutral_%s_%s" % (red_iname, insn.id)
         init_neutral_insn = make_assignment(
                 id=init_neutral_id,
                 assignees=tuple(var(nvn) for nvn in neutral_var_names),
@@ -1240,7 +1240,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
         else:
             reduction_expr = expr.expr
 
-        transfer_id = insn_id_gen("%s_%s_transfer" % (insn.id, red_iname))
+        transfer_id = "red_transfer_%s_%s" % (red_iname, insn.id)
         transfer_insn = make_assignment(
                 id=transfer_id,
                 assignees=tuple(
@@ -1279,7 +1279,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
             domains.append(_make_slab_set(stage_exec_iname, bound-new_size))
             new_iname_tags[stage_exec_iname] = kernel.iname_tags(red_iname)
 
-            stage_id = insn_id_gen("red_%s_stage_%d" % (red_iname, istage))
+            stage_id = "red_stage_%d_%s_%s" % (istage, red_iname, insn.id)
             stage_insn = make_assignment(
                     id=stage_id,
                     assignees=tuple(
@@ -1311,7 +1311,6 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
             istage += 1
 
         new_insn_add_depends_on.add(prev_id)
-        new_insn_add_no_sync_with.add((prev_id, "any"))
         new_insn_add_within_inames.add(base_exec_iname or stage_exec_iname)
 
         if nresults == 1:
@@ -1909,7 +1908,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
                 new_expr, = new_expressions
                 replacement_insns = [
                         make_assignment(
-                            id=insn_id_gen(insn.id),
+                            id="red_assign_%s" % (insn.id),
                             depends_on=result_assignment_dep_on,
                             assignees=insn.assignees,
                             expression=new_expr,

@@ -77,7 +77,7 @@ class _BatchVariableChanger(RuleAwareIdentityMapper):
         if not self.sequential:
             if tv is None:
                 return False
-            if self.batch_varying_temps:
+            if self.batch_varying_temps is not None:
                 return tv.name in self.batch_varying_temps
             else:
                 if not temp_needs_batching_if_not_sequential(tv,
