@@ -1,4 +1,16 @@
-def convert_to_reduction(kernel, insn_ids, reduction_over_inames):
+from loopy.diagnostic import LoopyError
+
+
+def convert_to_reduction(kernel, within, reduction_over_inames):
+    insn_ids = []
+    if isinstance(within, str):
+        from loopy.match import parse_match
+        within = parse_match(within)
+
+    insn_ids = [insn.id for insn in kernel.instructions if within(kernel, insn)]
+    if not insn_ids:
+        raise LoopyError("No matching instructions found.")
+
     modified_insns = {}
     for insn_id in insn_ids:
         insn = kernel.id_to_insn[insn_id]
