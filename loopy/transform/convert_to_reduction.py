@@ -1,4 +1,5 @@
 from loopy.diagnostic import LoopyError
+from pymbolic.primitives import Sum
 
 
 def convert_to_reduction(kernel, within, reduction_over_inames):
@@ -19,7 +20,14 @@ def convert_to_reduction(kernel, within, reduction_over_inames):
 
         assert all(iname in insn.within_inames for iname in reduction_over_inames)
 
-        redn_expr = (set(rhs.children)-set([assignee])).pop()
+        # FIXME: Assuming that the expression is a Sum node
+
+        assert isinstance(rhs, Sum)
+        assert assignee in rhs.children
+
+        redn_expr = rhs - assignee
+        redn_expr = Sum(tuple(set(rhs.children)-set([assignee])))
+
         from loopy.symbolic import Reduction
         from loopy.library.reduction import SumReductionOperation
         redn = Reduction(SumReductionOperation(), inames=reduction_over_inames,
