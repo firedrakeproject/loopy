@@ -162,6 +162,17 @@ def remove_instructions(kernel, insn_ids):
     if not insn_ids:
         return kernel
 
+    if isinstance(insn_ids, str):
+        from loopy.match import parse_match
+        try:
+            within = parse_match(insn_ids)
+        except LoopyError:
+            raise LoopyError("insn_ids should be either set or a str as "
+                    "understood by *loopy.match.parse_match*")
+
+        insn_ids = set([insn.id for insn in kernel.instructions if
+            within(kernel, insn)])
+
     assert isinstance(insn_ids, set)
     id_to_insn = kernel.id_to_insn
 
@@ -177,10 +188,12 @@ def remove_instructions(kernel, insn_ids):
         else:
             depends_on = insn.depends_on
 
-        new_deps = depends_on - insn_ids
+        new_deps = depends_on.copy()
 
         for dep_id in depends_on & insn_ids:
             new_deps = new_deps | id_to_insn[dep_id].depends_on
+
+        new_deps = depends_on - insn_ids
 
         # update no_sync_with
 
