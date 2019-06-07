@@ -193,7 +193,7 @@ def remove_instructions(kernel, insn_ids):
         for dep_id in depends_on & insn_ids:
             new_deps = new_deps | id_to_insn[dep_id].depends_on
 
-        new_deps = depends_on - insn_ids
+        new_deps = new_deps - insn_ids
 
         # update no_sync_with
 
