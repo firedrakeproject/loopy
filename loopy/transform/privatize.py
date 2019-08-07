@@ -25,6 +25,7 @@ THE SOFTWARE.
 
 import six
 from loopy.diagnostic import LoopyError
+from loopy.program import iterate_over_kernels_if_given_program
 
 import logging
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ class ExtraInameIndexInserter(IdentityMapper):
             return expr.index(new_idx)
 
 
+@iterate_over_kernels_if_given_program
 def privatize_temporaries_with_inames(
         kernel, privatizing_inames, only_var_names=None):
     """This function provides each loop iteration of the *privatizing_inames*

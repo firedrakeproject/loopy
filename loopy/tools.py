@@ -802,11 +802,17 @@ def write_to_python(kernel, filename=None):
                 % endif
                 ),
             % endfor
-            ], lang_version=${lp.VERSION})'''
+            ], lang_version=${lp.VERSION})
+
+    % if iname_to_tag:
+    knl = lp.tag_inames(knl, "${', '.join(('%s:%s' % (iname, tag)) for iname,
+                tag in iname_to_tag.items())}")
+    % endif'''
 
     python_code = Template(python_code).render(insn_x_opts=insn_x_options,
             domains=kernel.domains, args=kernel.args,
-            temp_vars=[k for k in kernel.temporary_variables.values()])
+            temp_vars=[k for k in kernel.temporary_variables.values()],
+            iname_to_tag=kernel.iname_to_tag)
 
     python_code = re.sub("\\n    ", "\n", python_code)
     if filename:
