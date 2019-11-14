@@ -42,12 +42,12 @@ from six.moves import intern
 from mako.template import Template
 import loopy as lp
 
+
 __doc__ = """
 .. currentmodule:: loopy
 
-.. autofunction:: write_to_python
+.. autofunction:: dump_as_python
 """
-
 
 if six.PY2:
     def is_integer(obj):
@@ -187,7 +187,9 @@ class LoopyEqKeyBuilder(object):
         self.field_dict[field_name] = value
 
     def update_for_pymbolic_field(self, field_name, value):
-        self.field_dict[field_name] = str(value).encode("utf-8")
+        from loopy.symbolic import EqualityPreservingStringifyMapper
+        self.field_dict[field_name] = \
+                EqualityPreservingStringifyMapper()(value).encode("utf-8")
 
     def key(self):
         """A key suitable for equality comparison."""
@@ -714,7 +716,7 @@ def natsorted(seq, key=lambda x: x):
     return sorted(seq, key=lambda y: natorder(key(y)))
 
 
-def write_to_python(kernel, filename=None):
+def dump_as_python(kernel, filename=None):
     """
     Generates a python code for generating *kernel* for sharing kernels.
 

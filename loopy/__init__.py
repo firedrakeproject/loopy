@@ -148,14 +148,15 @@ from loopy.frontend.fortran import (c_preprocess, parse_transformed_fortran,
         parse_fortran)
 
 from loopy.target import TargetBase, ASTBuilderBase
-from loopy.target.c import CTarget, ExecutableCTarget, generate_header
+from loopy.target.c import CFamilyTarget, CTarget, ExecutableCTarget, generate_header
 from loopy.target.cuda import CudaTarget
 from loopy.target.opencl import OpenCLTarget
 from loopy.target.pyopencl import PyOpenCLTarget, NvidiaPyOpenCLTarget
 from loopy.target.ispc import ISPCTarget
 from loopy.target.numba import NumbaTarget, NumbaCudaTarget
 
-from loopy.tools import (Optional, write_to_python)
+from loopy.tools import Optional
+from loopy.tools import dump_as_python
 
 
 __all__ = [
@@ -240,7 +241,7 @@ __all__ = [
 
         "add_barrier",
 
-        "write_to_python",
+        "dump_as_python",
 
         "register_callable_kernel",
         "register_function_id_to_in_knl_callable_mapper",
@@ -287,7 +288,7 @@ __all__ = [
         "LoopyError", "LoopyWarning",
 
         "TargetBase",
-        "CTarget", "ExecutableCTarget", "generate_header",
+        "CFamilyTarget", "CTarget", "ExecutableCTarget", "generate_header",
         "CudaTarget", "OpenCLTarget",
         "PyOpenCLTarget", "NvidiaPyOpenCLTarget", "ISPCTarget",
         "NumbaTarget", "NumbaCudaTarget",
