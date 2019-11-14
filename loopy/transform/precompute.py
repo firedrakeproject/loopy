@@ -172,7 +172,23 @@ class RuleInvocationReplacer(RuleAwareIdentityMapper):
             return super(RuleInvocationReplacer, self).map_substitution(
                     name, tag, arguments, expn_state)
 
+        # {{{ check if in footprint
+
         rule = self.rule_mapping_context.old_subst_rules[name]
+        arg_context = self.make_new_arg_context(
+                    name, rule.arguments, arguments, expn_state.arg_context)
+        args = [arg_context[arg_name] for arg_name in rule.arguments]
+
+        accdesc = AccessDescriptor(
+                storage_axis_exprs=storage_axis_exprs(
+                    self.storage_axis_sources, args))
+
+        if not self.array_base_map.is_access_descriptor_in_footprint(accdesc):
+            return super(RuleInvocationReplacer, self).map_substitution(
+                    name, tag, arguments, expn_state)
+
+        # }}}
+
         assert len(arguments) == len(rule.arguments)
 
         abm = self.array_base_map
@@ -722,34 +738,33 @@ def precompute_for_single_kernel(kernel, callables_table, subst_use,
 
         # {{{ check that we got the desired domain
 
-        if 0:
-            check_domain = add_assumptions(
-                check_domain.project_out_except(
-                    primed_non1_saxis_names, [isl.dim_type.set]))
+        check_domain = add_assumptions(
+            check_domain.project_out_except(
+                primed_non1_saxis_names, [isl.dim_type.set]))
 
-            mod_check_domain = add_assumptions(mod_domain)
+        mod_check_domain = add_assumptions(mod_domain)
 
-            # re-add the prime from the new variable
-            var_dict = mod_check_domain.get_var_dict(isl.dim_type.set)
+        # re-add the prime from the new variable
+        var_dict = mod_check_domain.get_var_dict(isl.dim_type.set)
 
-            for saxis in non1_storage_axis_names:
-                dt, dim_idx = var_dict[saxis]
-                mod_check_domain = mod_check_domain.set_dim_name(dt, dim_idx, saxis+"'")
+        for saxis in non1_storage_axis_names:
+            dt, dim_idx = var_dict[saxis]
+            mod_check_domain = mod_check_domain.set_dim_name(dt, dim_idx, saxis+"'")
 
-            mod_check_domain = mod_check_domain.project_out_except(
-                    primed_non1_saxis_names, [isl.dim_type.set])
+        mod_check_domain = mod_check_domain.project_out_except(
+                primed_non1_saxis_names, [isl.dim_type.set])
 
-            mod_check_domain, check_domain = isl.align_two(
-                    mod_check_domain, check_domain)
+        mod_check_domain, check_domain = isl.align_two(
+                mod_check_domain, check_domain)
 
-            # The modified domain can't get bigger by adding constraints
-            assert mod_check_domain <= check_domain
+        # The modified domain can't get bigger by adding constraints
+        assert mod_check_domain <= check_domain
 
-            if not check_domain <= mod_check_domain:
-                print(check_domain)
-                print(mod_check_domain)
-                raise LoopyError("domain of preexisting inames does not match "
-                        "domain needed for precompute")
+        if not check_domain <= mod_check_domain:
+            print(check_domain)
+            print(mod_check_domain)
+            raise LoopyError("domain of preexisting inames does not match "
+                    "domain needed for precompute")
 
         # }}}
 
