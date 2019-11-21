@@ -1,35 +1,49 @@
-from pymbolic.primitives import Variable
+from pymbolic.primitives import Variable, Subscript
 from loopy.symbolic import (RuleAwareIdentityMapper, SubstitutionRuleMappingContext)
-from loopy.kernel.data import ValueArg
 from loopy.transform.iname import remove_unused_inames
 
 
-class ScalarChanger(RuleAwareIdentityMapper):
-    def __init__(self, rule_mapping_context, var_name):
+class AxisRemover(RuleAwareIdentityMapper):
+    def __init__(self, rule_mapping_context, var_name, axis_num):
         self.var_name = var_name
-        super(ScalarChanger, self).__init__(rule_mapping_context)
+        self.axis_num = axis_num
+        super(AxisRemover, self).__init__(rule_mapping_context)
 
     def map_subscript(self, expr, expn_state):
         if expr.aggregate.name == self.var_name:
-            return Variable(self.var_name)
+            if len(expr.index_tuple) == 1:
+                return Variable(self.var_name)
+            else:
+                return Subscript(expr.aggregate,
+                        expr.index_tuple[:self.axis_num]
+                        + expr.index_tuple[self.axis_num+1:])
 
-        return super(ScalarChanger, self).map_subscript(expr, expn_state)
+        return super(AxisRemover, self).map_subscript(expr, expn_state)
 
 
-def make_scalar(kernel, var_name):
+def remove_axis(kernel, var_name, axis_num):
+    assert var_name in kernel.temporary_variables
+
+    assert axis_num < len(kernel.temporary_variables[var_name].shape)
+
     rule_mapping_context = SubstitutionRuleMappingContext(kernel.substitutions,
             kernel.get_var_name_generator())
 
-    kernel = ScalarChanger(rule_mapping_context, var_name).map_kernel(kernel)
+    kernel = AxisRemover(rule_mapping_context, var_name, axis_num).map_kernel(kernel)
 
-    new_args = [ValueArg(arg.name, arg.dtype, target=arg.target,
-        is_output_only=arg.is_output_only) if arg.name == var_name else arg for
-        arg in kernel.args]
-    new_temps = dict((tv.name, tv.copy(shape=(), dim_tags=None))
-            if tv.name == var_name else (tv.name, tv) for tv in
-            kernel.temporary_variables.values())
+    if len(kernel.temporary_variables[var_name].shape) == 1:
+        new_temps = dict((tv.name, tv.copy(shape=(), dim_tags=None))
+                if tv.name == var_name else (tv.name, tv) for tv in
+                kernel.temporary_variables.values())
+    else:
+        from loopy import auto
+        new_temps = dict((tv.name,
+            tv.copy(shape=tv.shape[:axis_num]+tv.shape[axis_num+1:],
+                strides=auto, dim_tags=None))
+                if tv.name == var_name else (tv.name, tv) for tv in
+                kernel.temporary_variables.values())
 
-    return kernel.copy(args=new_args, temporary_variables=new_temps)
+    return kernel.copy(temporary_variables=new_temps)
 
 
 def remove_invariant_inames(kernel):

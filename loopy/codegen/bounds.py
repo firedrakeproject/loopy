@@ -58,8 +58,11 @@ def get_approximate_convex_bounds_checks(domain, check_inames, implemented_domai
 def get_usable_inames_for_conditional(kernel, sched_index):
     from loopy.schedule import (
         find_active_inames_at, get_insn_ids_for_block_at, has_barrier_within)
+    from loopy.schedule import CallKernel, ReturnFromKernel, EnterLoop
     from loopy.kernel.data import (ConcurrentTag, LocalIndexTagBase,
                                    IlpBaseTag)
+
+    assert isinstance(kernel.schedule[sched_index], EnterLoop)
 
     result = find_active_inames_at(kernel, sched_index)
     crosses_barrier = has_barrier_within(kernel, sched_index)
@@ -68,7 +71,6 @@ def get_usable_inames_for_conditional(kernel, sched_index):
     within_subkernel = False
 
     for sched_item_index, sched_item in enumerate(kernel.schedule[:sched_index+1]):
-        from loopy.schedule import CallKernel, ReturnFromKernel
         if isinstance(sched_item, CallKernel):
             within_subkernel = True
             subkernel_index = sched_item_index
@@ -87,6 +89,8 @@ def get_usable_inames_for_conditional(kernel, sched_index):
         for insn in insn_ids_for_subkernel
         for iname in kernel.insn_inames(insn))
 
+    sched_item = kernel.schedule[sched_index]
+
     for iname in inames_for_subkernel:
         # Parallel inames are defined within a subkernel, BUT:
         #
@@ -101,7 +105,12 @@ def get_usable_inames_for_conditional(kernel, sched_index):
                     and crosses_barrier)
                 and not kernel.iname_tags_of_type(iname, IlpBaseTag)
         ):
-            result.add(iname)
+            # in the case of multiple inames with a concurrent tag in the
+            # subkernel, pick only the ones that are interacting with the loop
+            # at 'sched_index'
+            if (kernel.iname_to_insns()[sched_item.iname]
+                    & kernel.iname_to_insns()[iname]):
+                result.add(iname)
 
     return frozenset(result)
 
