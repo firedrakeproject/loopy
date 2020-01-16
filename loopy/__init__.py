@@ -148,7 +148,8 @@ from loopy.frontend.fortran import (c_preprocess, parse_transformed_fortran,
         parse_fortran)
 
 from loopy.target import TargetBase, ASTBuilderBase
-from loopy.target.c import CTarget, ExecutableCTarget, CVecTarget, generate_header
+from loopy.target.c import (CFamilyTarget, CTarget, ExecutableCTarget,
+        CVecTarget, generate_header)
 from loopy.target.cuda import CudaTarget
 from loopy.target.opencl import OpenCLTarget
 from loopy.target.pyopencl import PyOpenCLTarget, NvidiaPyOpenCLTarget
@@ -288,7 +289,8 @@ __all__ = [
         "LoopyError", "LoopyWarning",
 
         "TargetBase",
-        "CTarget", "CVecTarget", "ExecutableCTarget", "generate_header",
+        "CFamilyTarget", "CTarget", "CVecTarget", "ExecutableCTarget",
+        "generate_header",
         "CudaTarget", "OpenCLTarget",
         "PyOpenCLTarget", "NvidiaPyOpenCLTarget", "ISPCTarget",
         "NumbaTarget", "NumbaCudaTarget",
