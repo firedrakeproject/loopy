@@ -116,11 +116,11 @@ def register_function_id_to_in_knl_callable_mapper(program,
     if func_id_to_in_knl_callable_mapper not in (
             program.func_id_to_in_knl_callable_mappers):
         from loopy.tools import unpickles_equally
-        if not unpickles_equally(func_id_to_in_knl_callable_mapper):
-            raise LoopyError("function '%s' does not "
-                    "compare equally after being upickled "
-                    "and would disrupt loopy's caches"
-                    % func_id_to_in_knl_callable_mapper)
+        # if not unpickles_equally(func_id_to_in_knl_callable_mapper):
+        #     raise LoopyError("function '%s' does not "
+        #             "compare equally after being upickled "
+        #             "and would disrupt loopy's caches"
+        #             % func_id_to_in_knl_callable_mapper)
         new_func_id_mappers = program.func_id_to_in_knl_callable_mappers + (
                 [func_id_to_in_knl_callable_mapper])
 
