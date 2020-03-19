@@ -123,6 +123,7 @@ class CodeGenerationResult(ImmutableRecord):
 
     def device_code(self):
         preamble_codes = process_preambles(getattr(self, "device_preambles", []))
+        preamble_codes.append("#include <stdint.h>\n")
 
         return (
                 "".join(preamble_codes)

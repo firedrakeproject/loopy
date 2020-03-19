@@ -1715,7 +1715,7 @@ def simplify_using_aff(kernel, expr):
         return expr
 
     # FIXME: Deal with assumptions, too.
-    aff = aff.gist(domain)
+    # aff = aff.gist(domain)
 
     return aff_to_expr(aff)
 
