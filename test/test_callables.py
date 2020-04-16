@@ -480,7 +480,7 @@ def test_nested_callable_inline():
     callee1 = lp.make_function(
             "{[i]: 0<=i<1}",
             """
-            y[i] = 2*x[i]
+            y[i] = pow(x[i], 2)
             """, name='callee1')
     callee2 = lp.make_kernel(
             "{[i]: 0<=i<1}",

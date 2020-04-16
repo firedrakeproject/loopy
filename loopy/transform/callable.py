@@ -37,7 +37,7 @@ from loopy.isl_helpers import simplify_via_aff
 from loopy.kernel.function_interface import (get_kw_pos_association,
         CallableKernel, ScalarCallable)
 from loopy.program import Program, ResolvedFunctionMarker
-from loopy.symbolic import SubArrayRef
+from loopy.symbolic import SubArrayRef, RuleAwareIdentityMapper
 
 __doc__ = """
 .. currentmodule:: loopy
@@ -154,6 +154,11 @@ class _RegisterCalleeKernel(ImmutableRecord):
         return None
 
 
+class CallableUnresolver(RuleAwareIdentityMapper):
+    def map_resolved_function(self, expr, expn_state):
+        return expr.function
+
+
 def register_callable_kernel(program, callee_kernel):
     """Returns a copy of *caller_kernel*, which would resolve *function_name* in an
     expression as a call to *callee_kernel*.
@@ -210,9 +215,19 @@ def register_callable_kernel(program, callee_kernel):
 
     # }}}
 
+    # convert all ResolvedFunction's in callee back to Call
+    # FIXME: need more sanity checks before doing this.
+    from loopy.symbolic import SubstitutionRuleMappingContext
+    rule_mapping_context = SubstitutionRuleMappingContext(
+            callee_kernel.substitutions,
+            callee_kernel.get_var_name_generator())
+
+    callables_unresolver = CallableUnresolver(rule_mapping_context)
+    callee_kernel = rule_mapping_context.finish_kernel(
+            callables_unresolver.map_kernel(callee_kernel))
+
     # take the function resolvers from the Program and resolve the functions in
     # the callee kernel
-    from loopy.symbolic import SubstitutionRuleMappingContext
     rule_mapping_context = SubstitutionRuleMappingContext(
             callee_kernel.substitutions,
             callee_kernel.get_var_name_generator())
