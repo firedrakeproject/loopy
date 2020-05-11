@@ -791,7 +791,10 @@ class CallablesTable(ImmutableRecord):
             # identifier corresponding to that callable.
             for func_id, in_knl_callable in self.resolved_functions.items():
                 if in_knl_callable == in_kernel_callable:
-                    history[func_id] = history[func_id] | frozenset([function.name])
+                    if func_id in history:
+                        history[func_id] = history[func_id]
+                    else:
+                        history[func_id] = frozenset([function.name])
                     return (
                             self.copy(
                                 history=history),
@@ -827,8 +830,12 @@ class CallablesTable(ImmutableRecord):
         updated_resolved_functions[unique_function_identifier] = (
                 in_kernel_callable)
 
-        history[unique_function_identifier] = (
-                history[function.name] | frozenset([unique_function_identifier]))
+        if function.name in history:
+            history[unique_function_identifier] = (
+                history[function.name])
+        else:
+            history[unique_function_identifier] = (
+                 frozenset([unique_function_identifier]))
 
         return (
                 self.copy(
