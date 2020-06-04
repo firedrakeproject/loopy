@@ -742,10 +742,8 @@ def generate_loop_schedules_internal(
     Fore = kernel.options._fore  # noqa
     Style = kernel.options._style  # noqa
 
-    if allow_boost is None:
-        rec_allow_boost = None
-    else:
-        rec_allow_boost = False
+    sched_state = (
+            schedule_as_many_run_insns_as_possible(sched_state))
 
     active_inames_set = frozenset(sched_state.active_inames)
 
