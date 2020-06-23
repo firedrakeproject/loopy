@@ -642,10 +642,9 @@ class SchedulerState(ImmutableRecord):
         in them that are left to schedule. If a group name occurs in this
         mapping, that group is considered active.
 
-    .. attribute:: uses_of_boostability
+    .. attribute:: lazy_topological_sort_getter
 
-        Used to produce warnings about deprecated 'boosting' behavior
-        Should be removed along with boostability in 2017.x.
+        Used to get a topologically sort of the instructions lazily.
     """
 
     @property
@@ -655,8 +654,16 @@ class SchedulerState(ImmutableRecord):
         else:
             return None
 
+
+class LazyTopologicalSortGetter(object):
+    """Returns instruction ids of the kernel in a topologically sorted order
+    """
+
+    def __init__(self, kernel):
+        self.kernel = kernel
+
     @memoize_method
-    def get_insn_ids_in_a_topologically_sorted_order(self):
+    def __call__(self):
         from pytools.graph import compute_topological_order
 
         rev_dep_map = {insn.id: set() for insn in self.kernel.instructions}
@@ -688,7 +695,7 @@ def schedule_as_many_run_insns_as_possible(sched_state):
     # {{{ topological sort
 
     toposorted_insn_ids = tuple(insn_id for insn_id in
-            sched_state.get_insn_ids_in_a_topologically_sorted_order() if
+            sched_state.lazy_topological_sort_getter() if
             insn_id in sched_state.unscheduled_insn_ids and (
                 sched_state.kernel.id_to_insn[insn_id].within_inames >=
                 frozenset(sched_state.active_inames)))
@@ -2002,7 +2009,9 @@ def generate_loop_schedules_inner(kernel, callables_table, debug_args={}):
             group_insn_counts=group_insn_counts(kernel),
             active_group_counts={},
 
-            uses_of_boostability=[])
+            uses_of_boostability=[],
+            lazy_topological_sort_getter=LazyTopologicalSortGetter(kernel)
+    )
 
     schedule_gen_kwargs = {}
     if kernel.options.ignore_boostable_into:
