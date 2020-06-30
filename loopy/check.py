@@ -600,11 +600,11 @@ def _check_variable_access_ordered_inner(kernel):
     overlap_checker = AccessRangeOverlapChecker(kernel)
     aliasing_equiv_classes = find_aliasing_equivalence_classes(kernel)
 
-    logger.debug("%s: check_variable_access_ordered: start" % kernel.name)
-
-    # dep_reqs_to_vars: A mapping from (writer_id, dep_req_id) between whom
-    # dependency must be established to the variables which prompted the
-    # dependency requirement.
+    # dep_reqs_to_vars: A mapping (writer_id, dep_req_id) -> set of variable names,
+    # where the tuple denotes a pair of instructions IDs, and the variable
+    # names are the ones that necessitate a dependency.
+    #
+    # Note: This can be worst-case O(n^2) in the number of instructions.
     dep_reqs_to_vars = {}
 
     wmap = kernel.writer_map()
@@ -623,8 +623,9 @@ def _check_variable_access_ordered_inner(kernel):
 
         for writer in writers:
             required_deps = (readers | writers) - set([writer])
-            required_deps = set([req_dep for req_dep in required_deps if not
-                declares_nosync_with(kernel, address_space, writer,
+            required_deps = set([req_dep
+                for req_dep in required_deps
+                if not declares_nosync_with(kernel, address_space, writer,
                     req_dep)])
 
             for req_dep in required_deps:
@@ -645,7 +646,10 @@ def _check_variable_access_ordered_inner(kernel):
         depends_on[insn.id].update(insn.depends_on)
         for dep in insn.depends_on:
             rev_depends[dep].add(insn.id)
+
     # }}}
+
+    # {{{ remove pairs from dep_reqs_to_vars for which dependencies exist
 
     topological_order = _get_topological_order(kernel)
 
@@ -658,27 +662,38 @@ def _check_variable_access_ordered_inner(kernel):
         :arg order: An instance of :class:`list` of instruction ids in which the
             *edges* graph is to be traversed.
         """
-        # memoized_predecessors: mapping from insn_id to its direct/indirect
+        # predecessors: mapping from insn_id to its direct/indirect
         # predecessors
-        memoized_predecessors = {}
+        predecessors = {}
 
-        # reverse postorder traversal of dependency graph
         for insn_id in order:
-            # accumulated_predecessors:insn_id's direct+indirect predecessors
-            accumulated_predecessors = memoized_predecessors.pop(insn_id, set())
+            # insn_predecessors:insn_id's direct+indirect predecessors
 
-            for pred in accumulated_predecessors:
-                dep_reqs_to_vars.pop((insn_id, pred), None)
+            # This set of predecessors is complete because we're
+            # traversing in topological order: No predecessor
+            # can occur after the instruction itself.
+            insn_predecessors = predecessors.pop(insn_id, set())
+
+            for pred in insn_predecessors:
+                dep_reqs_to_vars.pop(
+                    (insn_id, pred),
+                    # don't fail if pair doesn't exist
+                    None)
 
             for successor in edges[insn_id]:
-                memoized_predecessors.setdefault(successor, set()).update(
-                        accumulated_predecessors | set([insn_id]))
+                predecessors.setdefault(successor, set()).update(
+                        insn_predecessors | set([insn_id]))
 
     # forward dep. graph traversal in reverse topological sort order
+    # (proceeds "end of program" -> "beginning of program")
     discard_dep_reqs_in_order(dep_reqs_to_vars, depends_on,
             topological_order[::-1])
+
     # reverse dep. graph traversal in topological sort order
+    # (proceeds "beginning of program" -> "end of program")
     discard_dep_reqs_in_order(dep_reqs_to_vars, rev_depends, topological_order)
+
+    # }}}
 
     # {{{ handle dependency requirements that weren't satisfied
 
@@ -736,8 +751,6 @@ def _check_variable_access_ordered_inner(kernel):
 
     # }}}
 
-    logger.debug("%s: check_variable_access_ordered: done" % kernel.name)
-
 
 def check_variable_access_ordered(kernel):
     """Checks that between each write to a variable and all other accesses to
@@ -759,30 +772,17 @@ def check_variable_access_ordered(kernel):
     if kernel.options.enforce_variable_access_ordered == "no_check":
         return
 
-    if kernel.options.enforce_variable_access_ordered:
-        try:
+    from pytools import ProcessLogger
+    with ProcessLogger(logger, "%s: check variable access ordered" % kernel.name):
+        if kernel.options.enforce_variable_access_ordered:
             _check_variable_access_ordered_inner(kernel)
-        except RuntimeError as e:
-            if isinstance(e.args[0], str) and (
-                    e.args[0].startswith('maximum recursion depth exceeded')):
+        else:
+            from loopy.diagnostic import VariableAccessNotOrdered
+            try:
+                _check_variable_access_ordered_inner(kernel)
+            except VariableAccessNotOrdered as e:
                 from loopy.diagnostic import warn_with_kernel
-                warn_with_kernel(kernel, "recursion_error_reached_in_check", str(e))
-            else:
-                raise e
-    else:
-        from loopy.diagnostic import VariableAccessNotOrdered
-        try:
-            _check_variable_access_ordered_inner(kernel)
-        except VariableAccessNotOrdered as e:
-            from loopy.diagnostic import warn_with_kernel
-            warn_with_kernel(kernel, "variable_access_ordered", str(e))
-        except RuntimeError as e:
-            if isinstance(e.args[0], str) and (
-                    e.args[0].startswith('maximum recursion depth exceeded')):
-                from loopy.diagnostic import warn_with_kernel
-                warn_with_kernel(kernel, "recursion_error_reached_in_check", str(e))
-            else:
-                raise e
+                warn_with_kernel(kernel, "variable_access_ordered", str(e))
 
 # }}}
 
