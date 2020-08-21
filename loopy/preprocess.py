@@ -2000,7 +2000,7 @@ def realize_ilp(kernel):
 
 def realize_c_vec(kernel):
 
-    from loopy.kernel.data import CVectorizeTag, ArrayArg
+    from loopy.kernel.data import VectorizeTag, ArrayArg
     from loopy.kernel.array import VectorArrayDimTag
     from loopy.kernel.tools import DomainChanger
     from loopy.isl_helpers import duplicate_axes
@@ -2113,7 +2113,7 @@ def realize_c_vec(kernel):
     simd_inames = []
 
     for i in sorted(kernel.all_inames()):
-        if kernel.iname_tags_of_type(i, CVectorizeTag):
+        if kernel.iname_tags_of_type(i, VectorizeTag):
             cvec_inames.append(i)
             j = i + "_p"  # TODO: use proper name generator
             k = i + "_simd"
@@ -2130,7 +2130,7 @@ def realize_c_vec(kernel):
 
             # change c_vec to ilp.seq for non-vectorizable instructions
             kernel = tag_inames(kernel, [(i, "ilp.seq")], retag=True)
-            kernel = tag_inames(kernel, [(j, "c_vec")])
+            kernel = tag_inames(kernel, [(j, "vec")])
             kernel = tag_inames(kernel, [(k, "omp_simd")])
 
     if not cvec_inames:
