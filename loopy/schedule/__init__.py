@@ -791,7 +791,7 @@ def schedule_as_many_run_insns_as_possible(sched_state, template_insn):
 # {{{ scheduling algorithm
 
 def generate_loop_schedules_internal(
-        sched_state, allow_boost=False, debug=None):
+        sched_state, debug=None):
     # allow_insn is set to False initially and after entering each loop
     # to give loops containing high-priority instructions a chance.
     kernel = sched_state.kernel
@@ -827,7 +827,6 @@ def generate_loop_schedules_internal(
             print(75*"=")
             print("PRESCHEDULED ITEMS AWAITING SCHEDULING:")
             print(dump_schedule(sched_state.kernel, sched_state.preschedule))
-        #print("boost allowed:", allow_boost)
         print(75*"=")
         print("LOOP NEST MAP (inner: outer):")
         for iname, val in six.iteritems(sched_state.loop_nest_around_map):
@@ -853,7 +852,6 @@ def generate_loop_schedules_internal(
                     within_subkernel=True,
                     may_schedule_global_barriers=False,
                     enclosing_subkernel_inames=sched_state.active_inames),
-                allow_boost=rec_allow_boost,
                 debug=debug):
             yield result
 
@@ -867,7 +865,6 @@ def generate_loop_schedules_internal(
                         preschedule=sched_state.preschedule[1:],
                         within_subkernel=False,
                         may_schedule_global_barriers=True),
-                    allow_boost=rec_allow_boost,
                     debug=debug):
                 yield result
 
@@ -886,7 +883,6 @@ def generate_loop_schedules_internal(
                     sched_state.copy(
                         schedule=sched_state.schedule + (next_preschedule_item,),
                         preschedule=sched_state.preschedule[1:]),
-                    allow_boost=rec_allow_boost,
                     debug=debug):
             yield result
 
@@ -931,15 +927,6 @@ def generate_loop_schedules_internal(
 
         want = kernel.insn_inames(insn) - sched_state.parallel_inames
         have = active_inames_set - sched_state.parallel_inames
-
-        # If insn is boostable, it may be placed inside a more deeply
-        # nested loop without harm.
-
-        orig_have = have
-        if allow_boost:
-            # Note that the inames in 'insn.boostable_into' necessarily won't
-            # be contained in 'want'.
-            have = have - insn.boostable_into
 
         if want != have:
             is_ready = False
@@ -1046,12 +1033,6 @@ def generate_loop_schedules_internal(
 
             # }}}
 
-            new_uses_of_boostability = []
-            if allow_boost:
-                if orig_have & insn.boostable_into:
-                    new_uses_of_boostability.append(
-                            (insn.id, orig_have & insn.boostable_into))
-
             new_sched_state = sched_state.copy(
                     scheduled_insn_ids=sched_state.scheduled_insn_ids | iid_set,
                     unscheduled_insn_ids=sched_state.unscheduled_insn_ids - iid_set,
@@ -1063,9 +1044,6 @@ def generate_loop_schedules_internal(
                         if insn_id not in sched_state.prescheduled_insn_ids
                         else sched_state.preschedule[1:]),
                     active_group_counts=new_active_group_counts,
-                    uses_of_boostability=(
-                        sched_state.uses_of_boostability
-                        + new_uses_of_boostability)
                     )
 
             new_sched_state = schedule_as_many_run_insns_as_possible(new_sched_state,
@@ -1075,8 +1053,7 @@ def generate_loop_schedules_internal(
             # made, revert to top of scheduler and see if more progress can be
             # made.
             for sub_sched in generate_loop_schedules_internal(
-                    new_sched_state,
-                    allow_boost=rec_allow_boost, debug=debug):
+                    new_sched_state, debug=debug):
                 yield sub_sched
 
             if not sched_state.group_insn_counts:
@@ -1118,12 +1095,10 @@ def generate_loop_schedules_internal(
                         # outside of last_entered_loop.
                         for subdep_id in gen_dependencies_except(kernel, insn_id,
                                 sched_state.scheduled_insn_ids):
-                            subdep = kernel.id_to_insn[insn_id]
                             want = (kernel.insn_inames(subdep_id)
                                     - sched_state.parallel_inames)
                             if (
-                                    last_entered_loop not in want and
-                                    last_entered_loop not in subdep.boostable_into):
+                                    last_entered_loop not in want):
                                 print(
                                     "%(warn)swarning:%(reset_all)s '%(iname)s', "
                                     "which the schedule is "
@@ -1184,7 +1159,7 @@ def generate_loop_schedules_internal(
                                 not in sched_state.prescheduled_inames
                                 else sched_state.preschedule[1:]),
                         ),
-                        allow_boost=rec_allow_boost, debug=debug):
+                        debug=debug):
                     yield sub_sched
 
                 return
@@ -1299,7 +1274,7 @@ def generate_loop_schedules_internal(
             for insn_id in reachable_insn_ids:
                 insn = kernel.id_to_insn[insn_id]
 
-                want = kernel.insn_inames(insn) | insn.boostable_into
+                want = kernel.insn_inames(insn)
 
                 if hypothetically_active_loops <= want:
                     if usefulness is None:
@@ -1400,7 +1375,6 @@ def generate_loop_schedules_internal(
                                     if iname not in sched_state.prescheduled_inames
                                     else sched_state.preschedule[1:]),
                                 ),
-                            allow_boost=rec_allow_boost,
                             debug=debug):
                         found_viable_schedule = True
                         yield sub_sched
@@ -1425,28 +1399,11 @@ def generate_loop_schedules_internal(
         # if done, yield result
         debug.log_success(sched_state.schedule)
 
-        for boost_insn_id, boost_inames in sched_state.uses_of_boostability:
-            warn_with_kernel(
-                    kernel, "used_boostability",
-                    "instruction '%s' was implicitly nested inside "
-                    "inames '%s' based on an idempotence heuristic. "
-                    "This is deprecated and will stop working in loopy 2017.x."
-                    % (boost_insn_id, ", ".join(boost_inames)),
-                    DeprecationWarning)
-
         yield sched_state.schedule
 
     else:
-        if not allow_boost and allow_boost is not None:
-            # try again with boosting allowed
-            for sub_sched in generate_loop_schedules_internal(
-                    sched_state,
-                    allow_boost=True, debug=debug):
-                yield sub_sched
-        else:
-            # dead end
-            if debug is not None:
-                debug.log_dead_end(sched_state.schedule)
+        if debug is not None:
+            debug.log_dead_end(sched_state.schedule)
 
 # }}}
 
@@ -2053,8 +2010,6 @@ def generate_loop_schedules_inner(kernel, callables_table, debug_args={}):
     )
 
     schedule_gen_kwargs = {}
-    if kernel.options.ignore_boostable_into:
-        schedule_gen_kwargs["allow_boost"] = None
 
     def print_longest_dead_end():
         if debug.interactive:
