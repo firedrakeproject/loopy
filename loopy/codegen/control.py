@@ -48,9 +48,11 @@ def get_admissible_conditional_inames_for(codegen_state, sched_index):
 
     has_barrier = has_barrier_within(kernel, sched_index)
 
+    from loopy.target.c import CVecTarget
     for iname, tags in six.iteritems(kernel.iname_to_tags):
         if (filter_iname_tags_by_type(tags, HardwareConcurrentTag)
-                and codegen_state.is_generating_device_code):
+                and codegen_state.is_generating_device_code
+                and not isinstance(kernel.target, CVecTarget)):
             if not has_barrier or not filter_iname_tags_by_type(tags, LocalIndexTag):
                 result.add(iname)
 
