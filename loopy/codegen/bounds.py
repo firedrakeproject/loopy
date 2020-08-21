@@ -59,7 +59,8 @@ def get_usable_inames_for_conditional(kernel, sched_index):
     from loopy.schedule import (
         find_active_inames_at, get_insn_ids_for_block_at, has_barrier_within)
     from loopy.kernel.data import (ConcurrentTag, LocalIndexTagBase,
-                                   IlpBaseTag)
+                                   IlpBaseTag, VectorizeTag)
+    from loopy.target.c import CVecTarget
 
     result = find_active_inames_at(kernel, sched_index)
     crosses_barrier = has_barrier_within(kernel, sched_index)
@@ -100,6 +101,8 @@ def get_usable_inames_for_conditional(kernel, sched_index):
                 and not (kernel.iname_tags_of_type(iname, LocalIndexTagBase)
                     and crosses_barrier)
                 and not kernel.iname_tags_of_type(iname, IlpBaseTag)
+                and (not kernel.iname_tags_of_type(iname, VectorizeTag)
+                     and isinstance(kernel.target, CVecTarget))
         ):
             result.add(iname)
 
