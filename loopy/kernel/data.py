@@ -191,7 +191,7 @@ class OpenMPSIMDTag(IlpBaseTag):
 # }}}
 
 
-class VectorizeTag(UniqueTag):
+class VectorizeTag(UniqueTag, HardwareConcurrentTag):
     def __str__(self):
         return "vec"
 
