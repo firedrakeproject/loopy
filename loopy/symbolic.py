@@ -880,7 +880,8 @@ class SubArrayRef(LoopyExpressionBase):
         from loopy.isl_helpers import simplify_via_aff
         sub_dim_tags = []
         sub_shape = []
-        #FIXME
+        # FIXME: dim_tag.stride*iname replaced by 1*iname
+        # because dim_tag does not have stride
         linearized_index = simplify_via_aff(
                     sum(1*iname for dim_tag, iname in
                     zip(arg.dim_tags, self.subscript.index_tuple)))
