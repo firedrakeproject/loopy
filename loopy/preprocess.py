@@ -2148,8 +2148,7 @@ def realize_c_vec(kernel):
     # TODO: find vector version of these function calls
     func_names = set(["abs_*", "fabs_*", "cos_*", "sin_*", "exp_*", "pow_*",
                       "sqrt_*", "fmax_*", "fmin_*", "atan2_*", "log_*",
-                      "tanh_*", "inverse_*"])
-    print("added inverse to math functions")
+                      "tanh_*"])
     function_finder = VariableFinder(func_names, regex=True)
     globals = [name for name, arg in kernel.arg_dict.items()
                if isinstance(arg, ArrayArg) and arg.shape[0] is not None]
