@@ -1298,9 +1298,10 @@ class CVecTarget(CTarget):
     """C Target with vector extensions, e.g. double4
     """
 
-    def __init__(self, length):
+    def __init__(self, length, batchedblas=False):
         super(CVecTarget, self).__init__()
         self.length = length
+        self.batchedblas = batchedblas
 
     @memoize_method
     def get_dtype_registry(self):
