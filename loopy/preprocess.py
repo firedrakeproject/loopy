@@ -2148,8 +2148,10 @@ def realize_c_vec(kernel):
     # TODO: find vector version of these function calls
     func_names = set(["abs_*", "fabs_*", "cos_*", "sin_*", "exp_*", "pow_*",
                       "sqrt_*", "fmax_*", "fmin_*", "atan2_*", "log_*",
-                      "tanh_*"])
+                      "tanh_*", "inv_*"])
+    batched_func_names = set(["inv_*"])
     function_finder = VariableFinder(func_names, regex=True)
+    batched_function_finder = VariableFinder(batched_func_names, regex=True)
     globals = [name for name, arg in kernel.arg_dict.items()
                if isinstance(arg, ArrayArg) and arg.shape[0] is not None]
     gbf = VariableFinder(globals)
@@ -2157,9 +2159,10 @@ def realize_c_vec(kernel):
 
     new_insts = []
     for inst in kernel.instructions:
-        if isinstance(inst, Assignment) and (inst.within_inames & set(cvec_inames)):
+        if (isinstance(inst, Assignment) or isinstance(inst, CallInstruction)) and (inst.within_inames & set(cvec_inames)):
             can_vectorize = True
             should_simd = False
+            batched = False
 
             # reduction over globals are sequentialized
             if can_vectorize and globals:
@@ -2175,22 +2178,14 @@ def realize_c_vec(kernel):
                 function_finder(inst.expression)
                 if function_finder.result:
                     function_finder.result = False
-                    # batched_function_finder(inst.expression)
-                    # if batched_function_finder.result:
-                    #     for name in inst.dependency_names():
-                    #         if name in kernel.temporary_variables:
-                    #             ary = kernel.temporary_variables[name]
-                    #         elif name in kernel.arg_dict:
-                    #             ary = kernel.arg_dict[name]
-                    #             if not isinstance(ary, ArrayArg):
-                    #                 continue
-                    #     if isinstance(ary.dim_tags[-1], VectorArrayDimTag):
-                    #         # TODO throw away batched iname subscritb
-                    # else:
-                    #     can_vectorize = False
-                    #     should_simd = True
-                    can_vectorize = False
-                    should_simd = True
+                    batched_function_finder(inst.expression)
+                    if batched_function_finder.result:
+                        batched = True
+                        can_vectorize = False
+                        should_simd = False
+                    else:
+                        can_vectorize = False
+                        should_simd = True
 
             # non privitized array indexed with c_vec iname cannot be vectorized
             if can_vectorize:
