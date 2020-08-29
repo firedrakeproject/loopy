@@ -1277,10 +1277,10 @@ def get_access_info(target, ary, index, eval_expr, vectorization_info):
                 subscripts=(apply_offset(index[0]),),
                 vector_index=None)
 
-    if len(ary.dim_tags) != len(index):
-        raise LoopyError("subscript to '%s[%s]' has the wrong "
-                "number of indices (got: %d, expected: %d)" % (
-                    ary.name, index, len(index), len(ary.dim_tags)))
+    # if len(ary.dim_tags) != len(index):
+    #     raise LoopyError("subscript to '%s[%s]' has the wrong "
+                # "number of indices (got: %d, expected: %d)" % (
+                #     ary.name, index, len(index), len(ary.dim_tags)))
 
     num_target_axes = ary.num_target_axes()
 
