@@ -398,7 +398,7 @@ def parse_array_dim_tags(dim_tags, n_axes=None, use_increasing_target_axes=False
 
 
 def convert_computed_to_fixed_dim_tags(name, num_user_axes, num_target_axes,
-        shape, dim_tags):
+        shape, dim_tags, target):
 
     # Just to clarify:
     #
@@ -418,15 +418,14 @@ def convert_computed_to_fixed_dim_tags(name, num_user_axes, num_target_axes,
 
     for i, dim_tag in enumerate(dim_tags):
         if isinstance(dim_tag, VectorArrayDimTag):
-            # if vector_dim is not None:
-            #     raise LoopyError("arg '%s' may only have one vector-tagged "
-            #             "argument dimension" % name)
-
-            # vector_dim = i
-            pass
-
-        # elif isinstance(dim_tag, CVectorArrayDimTag):
-        #     pass
+            from loopy.target.c import CVecTarget
+            if isinstance(target, CVecTarget):
+                pass
+            else:
+                if vector_dim is not None:
+                    raise LoopyError("arg '%s' may only have one vector-tagged "
+                            "argument dimension" % name)
+            vector_dim = i
 
         elif isinstance(dim_tag, _StrideArrayDimTagBase):
             if dim_tag.layout_nesting_level is None:
@@ -805,7 +804,7 @@ class ArrayBase(ImmutableRecord):
 
             new_dim_tags = convert_computed_to_fixed_dim_tags(
                     name, num_user_axes, num_target_axes,
-                    shape, dim_tags)
+                    shape, dim_tags, target)
 
             if new_dim_tags is not None:
                 # successfully normalized
