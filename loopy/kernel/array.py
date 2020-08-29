@@ -985,17 +985,15 @@ class ArrayBase(ImmutableRecord):
 
         for i, dim_tag in enumerate(self.dim_tags):
             if isinstance(dim_tag, VectorArrayDimTag):
-                from loopy.target.c import CVecTarget
-                if not isinstance(target, CVecTarget):
-                    shape_i = self.shape[i]
-                    if not is_integer(shape_i):
-                        raise LoopyError("shape of '%s' has non-constant-integer "
-                                "length for vector axis %d (0-based)" % (
-                                    self.name, i))
+                shape_i = self.shape[i]
+                if not is_integer(shape_i):
+                    raise LoopyError("shape of '%s' has non-constant-integer "
+                            "length for vector axis %d (0-based)" % (
+                                self.name, i))
 
-                    vec_dtype = target.vector_dtype(self.dtype, shape_i)
+                vec_dtype = target.vector_dtype(self.dtype, shape_i)
 
-                    return int(vec_dtype.itemsize) // int(self.dtype.itemsize)
+                return int(vec_dtype.itemsize) // int(self.dtype.itemsize)
 
         return 1
 
