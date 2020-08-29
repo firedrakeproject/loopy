@@ -2141,6 +2141,11 @@ def realize_c_vec(kernel):
         make_subst_func(dict((Variable(o), Variable(n))
                              for (o, n) in zip(cvec_inames, new_cvec_inames))))
     iname_map_simd = dict(zip(cvec_inames, simd_inames))
+    #FIXME use substmapper instead of rewriting inverse calls by
+    subst_mapper_batched = SubstitutionMapper(
+        make_subst_func(dict((Variable(o), 0)
+                             for o in cvec_inames)))
+
     subst_mapper_simd = SubstitutionMapper(
         make_subst_func(dict((Variable(o), Variable(n))
                              for (o, n) in zip(cvec_inames, simd_inames))))
@@ -2252,6 +2257,30 @@ def realize_c_vec(kernel):
                                           for i in inst.within_inames)
                 inst = inst.copy(assignee=lhs, expression=rhs,
                                  within_inames=within_inames)
+            elif batched:
+                import pymbolic.primitives as pym
+                from loopy.symbolic import SubArrayRef
+                lhs = ()
+                for assignee in inst.assignees:
+                    new_swept_inames = tuple([i for i in assignee.swept_inames if i not in cvec_inames ])
+                    new_inames = tuple([i for i in assignee.swept_inames if i not in cvec_inames ])
+                    new_subscript = pym.Subscript(assignee.subscript.aggregate, new_inames)
+                    lhs +=(SubArrayRef(new_swept_inames, new_subscript),)
+                params_new = ()
+                for parameter in inst.expression.parameters:
+                    new_swept_inames = tuple([i for i in parameter.swept_inames if i not in cvec_inames ])
+                    new_inames = tuple([i for i in parameter.swept_inames if i not in cvec_inames ])
+                    new_subscript = pym.Subscript(parameter.subscript.aggregate, new_inames)
+                    params_new += (SubArrayRef(new_swept_inames, new_subscript),)
+                rhs  = pym.Call(inst.expression.function, params_new)
+                within_inames = []
+                for i in inst.within_inames:
+                    if not i in iname_map:
+                        within_inames.append(i)
+                within_inames = frozenset(within_inames)
+                inst = inst.copy(assignees=lhs, expression=rhs,
+                                 within_inames=within_inames)
+            
 
         new_insts.append(inst)
 
