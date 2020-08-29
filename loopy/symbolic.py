@@ -876,15 +876,17 @@ class SubArrayRef(LoopyExpressionBase):
 
         aspace = arg.address_space
 
-        from loopy.kernel.array import FixedStrideArrayDimTag as DimTag
+        from loopy.kernel.array import FixedStrideArrayDimTag as DimTag, VectorArrayDimTag
         from loopy.isl_helpers import simplify_via_aff
         sub_dim_tags = []
         sub_shape = []
-        # FIXME: dim_tag.stride*iname replaced by 1*iname
-        # because dim_tag does not have stride
-        linearized_index = simplify_via_aff(
-                    sum(1*iname for dim_tag, iname in
-                    zip(arg.dim_tags, self.subscript.index_tuple)))
+        ind = []
+        for dim_tag, iname in zip(arg.dim_tags, self.subscript.index_tuple):
+            if not isinstance(dim_tag, VectorArrayDimTag):
+                ind.append(dim_tag.stride*iname)
+            else:
+                ind.append(iname)
+        linearized_index = simplify_via_aff(sum(ind))
 
         strides_as_dict = SweptInameStrideCollector(tuple(iname.name for iname in
             self.swept_inames))(linearized_index)
