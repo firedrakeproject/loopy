@@ -2174,6 +2174,21 @@ def realize_c_vec(kernel):
                 function_finder.result = False
                 function_finder(inst.expression)
                 if function_finder.result:
+                    function_finder.result = False
+                    # batched_function_finder(inst.expression)
+                    # if batched_function_finder.result:
+                    #     for name in inst.dependency_names():
+                    #         if name in kernel.temporary_variables:
+                    #             ary = kernel.temporary_variables[name]
+                    #         elif name in kernel.arg_dict:
+                    #             ary = kernel.arg_dict[name]
+                    #             if not isinstance(ary, ArrayArg):
+                    #                 continue
+                    #     if isinstance(ary.dim_tags[-1], VectorArrayDimTag):
+                    #         # TODO throw away batched iname subscritb
+                    # else:
+                    #     can_vectorize = False
+                    #     should_simd = True
                     can_vectorize = False
                     should_simd = True
 
