@@ -2032,8 +2032,11 @@ def realize_c_vec(kernel):
         kernel = kernel.copy(temporary_variables=tmps)
         return kernel
 
-    name_zero_vec = "zero_vec"
-    kernel = update_kernel_with_zerovecs(name_zero_vec, kernel)
+def check_cvec_vectorizability(kernel):
+    from loopy.kernel.data import VectorizeTag, ArrayArg, OpenMPSIMDTag
+    from loopy.kernel.array import VectorArrayDimTag
+    from loopy.symbolic import IdentityMapper
+    from loopy import Assignment
 
     # any variable not in subscript?
     class OutsideVariableFinder(IdentityMapper):
@@ -2107,44 +2110,7 @@ def realize_c_vec(kernel):
                 if vf.result:
                     self.result = True
             return super(SubscriptFinder, self).map_subscript(expr, args, kwargs)
-
-    cvec_inames = []
-    new_cvec_inames = []
-    simd_inames = []
-
-    for i in sorted(kernel.all_inames()):
-        if kernel.iname_tags_of_type(i, VectorizeTag):
-            cvec_inames.append(i)
-            j = i + "_p"  # TODO: use proper name generator
-            k = i + "_simd"
-            new_cvec_inames.append(j)
-            simd_inames.append(k)
-
-            # create domains for new inames
-            domch = DomainChanger(kernel, frozenset([i]))
-            kernel = kernel.copy(domains=domch.get_domains_with(
-                duplicate_axes(domch.domain, [i], [j])))
-            domch = DomainChanger(kernel, frozenset([i]))
-            kernel = kernel.copy(domains=domch.get_domains_with(
-                duplicate_axes(domch.domain, [i], [k])))
-
-            # change c_vec to ilp.seq for non-vectorizable instructions
-            kernel = tag_inames(kernel, [(i, "ilp.seq")], retag=True)
-            kernel = tag_inames(kernel, [(j, "vec")])
-            kernel = tag_inames(kernel, [(k, "omp_simd")])
-
-    if not cvec_inames:
-        return kernel
-
-    iname_map = dict(zip(cvec_inames, new_cvec_inames))
-    subst_mapper = SubstitutionMapper(
-        make_subst_func(dict((Variable(o), Variable(n))
-                             for (o, n) in zip(cvec_inames, new_cvec_inames))))
-    iname_map_simd = dict(zip(cvec_inames, simd_inames))
-    subst_mapper_simd = SubstitutionMapper(
-        make_subst_func(dict((Variable(o), Variable(n))
-                             for (o, n) in zip(cvec_inames, simd_inames))))
-
+    
     # TODO: find vector version of these function calls
     func_names = set(["abs_*", "fabs_*", "cos_*", "sin_*", "exp_*", "pow_*",
                       "sqrt_*", "fmax_*", "fmin_*", "atan2_*", "log_*",
@@ -2155,11 +2121,17 @@ def realize_c_vec(kernel):
     gbf = VariableFinder(globals)
     cf = ConditionalFinder()
 
-    new_insts = []
+    cvec_inames = list([i for i in sorted(kernel.all_inames()) if kernel.iname_tags_of_type(i, VectorizeTag)])
+
+    vectorext_inst = []
+    pragma_inst = [] 
+    iname_to_pragma_tag = [] # inames need to be retagged to OpenMPSIMD pragma tags 
+    iname_to_unr_tag = []
+
     for inst in kernel.instructions:
         if isinstance(inst, Assignment) and (inst.within_inames & set(cvec_inames)):
-            can_vectorize = True
             should_simd = False
+            can_vectorize = True
 
             # reduction over globals are sequentialized
             if can_vectorize and globals:
@@ -2198,7 +2170,6 @@ def realize_c_vec(kernel):
                         sf(inst.expression)
                         if sf.result:
                             can_vectorize = False
-                            break
 
             # cannot have inames outside of subscirpt
             if can_vectorize:
@@ -2216,38 +2187,25 @@ def realize_c_vec(kernel):
                 if cf.result:
                     can_vectorize = False
                     should_simd = True
-
-            # constant rhs cannot be vectorized (GCC doesn't like it)
+            
             if can_vectorize:
+                # TODO tried to unroll instead, check that this is really vectorized by gcc
+                # because simple constant rhs cannot be vectorized (GCC doesn't like it)
                 avf = VariableFinder(list(inst.within_inames & set(cvec_inames)))
                 avf(inst.expression)
                 if not avf.result:
-                    import pymbolic.primitives as p
-                    tv = kernel.temporary_variables[inst.assignee.aggregate.name]
-                    type = tv.dtype.dtype.name
-                    rhs = inst.expression + p.Variable(name_zero_vec+"_"+type)
-                    inst = inst.copy(expression=rhs)
-
+                    iname_to_unr_tag.extend([i for i in inst.within_inames if i in cvec_inames])
+    
             if can_vectorize:
-                lhs = subst_mapper(inst.assignee)
-                rhs = subst_mapper(inst.expression)
-                within_inames = frozenset(iname_map[i] if i in iname_map else i
-                                          for i in inst.within_inames)
-                inst = inst.copy(assignee=lhs, expression=rhs,
-                                 within_inames=within_inames)
+                vectorext_inst.append(inst)
             elif should_simd:
-                lhs = subst_mapper_simd(inst.assignee)
-                rhs = subst_mapper_simd(inst.expression)
-                within_inames = frozenset(iname_map_simd[i] if i in iname_map_simd else i
-                                          for i in inst.within_inames)
-                inst = inst.copy(assignee=lhs, expression=rhs,
-                                 within_inames=within_inames)
+                pragma_inst.append(inst)
+                iname_to_pragma_tag.extend([i for i in inst.within_inames if i in cvec_inames])
 
-        new_insts.append(inst)
+            should_simd = False
+            can_vectorize = False
 
-    kernel = kernel.copy(instructions=new_insts)
-    return kernel
-
+    return pragma_inst, vectorext_inst, list(iname_to_pragma_tag), list(iname_to_unr_tag)
 # }}}
 
 
