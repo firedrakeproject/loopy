@@ -2181,6 +2181,7 @@ def check_cvec_vectorizability(kernel):
 
     vectorext_inst = []
     pragma_inst = [] 
+    unr_inst = []
     iname_to_pragma_tag = [] # inames need to be retagged to OpenMPSIMD pragma tags 
     iname_to_unr_tag = []
 
@@ -2250,18 +2251,19 @@ def check_cvec_vectorizability(kernel):
                 avf = VariableFinder(list(inst.within_inames & set(cvec_inames)))
                 avf(inst.expression)
                 if not avf.result:
+                    unr_inst.append(inst.id)
                     iname_to_unr_tag.extend([i for i in inst.within_inames if i in cvec_inames])
     
             if can_vectorize:
-                vectorext_inst.append(inst)
+                vectorext_inst.append(inst.id)
             elif should_simd:
-                pragma_inst.append(inst)
+                pragma_inst.append(inst.id)
                 iname_to_pragma_tag.extend([i for i in inst.within_inames if i in cvec_inames])
 
             should_simd = False
             can_vectorize = False
-
-    return pragma_inst, vectorext_inst, list(iname_to_pragma_tag), list(iname_to_unr_tag)
+            
+    return vectorext_inst, dict(zip(pragma_inst, iname_to_pragma_tag)), dict(zip(unr_inst, iname_to_unr_tag))
 # }}}
 
 
