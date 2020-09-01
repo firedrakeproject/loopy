@@ -2061,6 +2061,11 @@ def cvec_privatize(kernel, pragma_inst, vectorext_inst):
         make_subst_func(dict((Variable(o), Variable(n))
                              for (o, n) in zip(cvec_inames, simd_inames))))
 
+    iname_map_unr = dict(zip(cvec_inames, unr_inames))
+    subst_mapper_unr = SubstitutionMapper(
+        make_subst_func(dict((Variable(o), Variable(n))
+                             for (o, n) in zip(cvec_inames, unr_inames))))
+
     new_insts = []
     for inst in kernel.instructions:
         
@@ -2078,6 +2083,14 @@ def cvec_privatize(kernel, pragma_inst, vectorext_inst):
             lhs = subst_mapper_simd(inst.assignee)
             rhs = subst_mapper_simd(inst.expression)
             within_inames = frozenset(iname_map_simd[i] if i in iname_map_simd else i
+                                        for i in inst.within_inames)
+            inst = inst.copy(assignee=lhs, expression=rhs,
+                                within_inames=within_inames)
+
+        elif inst.id in unr_inst_to_tag:
+            lhs = subst_mapper_unr(inst.assignee)
+            rhs = subst_mapper_unr(inst.expression)
+            within_inames = frozenset(iname_map_unr[i] if i in iname_map_unr else i
                                         for i in inst.within_inames)
             inst = inst.copy(assignee=lhs, expression=rhs,
                                 within_inames=within_inames)
