@@ -1997,8 +1997,12 @@ def realize_ilp(kernel):
     return privatize_temporaries_with_inames(kernel, privatizing_inames)
 
 # {{{ realize C vector extension
-def cvec_privatize(kernel, pragma_inst, vectorext_inst):
+def cvec_retag_and_privatize(kernel, vectorext_inst, pragma_inst_to_tag, unr_inst_to_tag):
 
+# for i in iname_to_pragma:
+#         kernel = tag_inames(kernel, [(i, "omp_simd")], retag=True)
+#     for i in iname_to_unr:
+#         kernel = tag_inames(kernel, [(i, "unr")], retag=True)
     from loopy.kernel.data import VectorizeTag, ArrayArg, OpenMPSIMDTag
     from loopy.kernel.array import VectorArrayDimTag
     from loopy.kernel.tools import DomainChanger
@@ -2017,37 +2021,36 @@ def cvec_privatize(kernel, pragma_inst, vectorext_inst):
     cvec_inames = []
     new_cvec_inames = []
     simd_inames = []
+    unr_inames = []
 
-    # generate new inames and attach their respective domains to the kernel
+    # generate new inames, attach their respective domains to the kernel and retag
     for i in sorted(kernel.all_inames()):
         if kernel.iname_tags_of_type(i, VectorizeTag):
             cvec_inames.append(i)
-            j = i + "_p"  # TODO: use proper name generator
-            new_cvec_inames.append(j)
-
-            # create domains for new inames
-            domch = DomainChanger(kernel, frozenset([i]))
-            kernel = kernel.copy(domains=domch.get_domains_with(
-                duplicate_axes(domch.domain, [i], [j])))
-
             kernel = tag_inames(kernel, [(i, "ilp.seq")], retag=True)
-            kernel = tag_inames(kernel, [(j, "vec")])
+            if i in vectorext_inst:
+                i_new = i + "_p"  # TODO: use proper name generator
+                new_cvec_inames.append(i_new)
+                domch = DomainChanger(kernel, frozenset([i]))
+                kernel = kernel.copy(domains=domch.get_domains_with(
+                    duplicate_axes(domch.domain, [i], [i_new])))
+                kernel = tag_inames(kernel, [(i_new, "vec")])
 
-        elif kernel.iname_tags_of_type(i, OpenMPSIMDTag):
-            cvec_inames.append(i)
-            k = i + "_simd"
-            simd_inames.append(k)
+            elif i in pragma_inst_to_tag.values():
+                i_new = i + "_simd"  # TODO: use proper name generator
+                simd_inames.append(i_new)
+                domch = DomainChanger(kernel, frozenset([i]))
+                kernel = kernel.copy(domains=domch.get_domains_with(
+                    duplicate_axes(domch.domain, [i], [i_new])))
+                kernel = tag_inames(kernel, [(i_new, "omp_simd")])
 
-        if (kernel.iname_tags_of_type(i, VectorizeTag) or
-           kernel.iname_tags_of_type(i, OpenMPSIMDTag)):
-           
-            domch = DomainChanger(kernel, frozenset([i]))
-            kernel = kernel.copy(domains=domch.get_domains_with(
-                duplicate_axes(domch.domain, [i], [k])))
-
-            # change c_vec to ilp.seq for non-vectorizable instructions
-            kernel = tag_inames(kernel, [(i, "ilp.seq")], retag=True)
-            kernel = tag_inames(kernel, [(k, "omp_simd")])
+            elif i in unr_inst_to_tag.values():
+                i_new = i + "_unr"  # TODO: use proper name generator
+                unr_inames.append(i_new)
+                domch = DomainChanger(kernel, frozenset([i]))
+                kernel = kernel.copy(domains=domch.get_domains_with(
+                    duplicate_axes(domch.domain, [i], [i_new])))
+                kernel = tag_inames(kernel, [(i_new, "unr")])
 
     if not cvec_inames:
         return kernel
@@ -2056,6 +2059,7 @@ def cvec_privatize(kernel, pragma_inst, vectorext_inst):
     subst_mapper = SubstitutionMapper(
         make_subst_func(dict((Variable(o), Variable(n))
                              for (o, n) in zip(cvec_inames, new_cvec_inames))))
+
     iname_map_simd = dict(zip(cvec_inames, simd_inames))
     subst_mapper_simd = SubstitutionMapper(
         make_subst_func(dict((Variable(o), Variable(n))
@@ -2068,9 +2072,8 @@ def cvec_privatize(kernel, pragma_inst, vectorext_inst):
 
     new_insts = []
     for inst in kernel.instructions:
-        
-        if inst in vectorext_inst:
-            # privatize temps with vect inames
+        if inst.id in vectorext_inst:
+            print("privatize temps with vect inames")
             lhs = subst_mapper(inst.assignee)
             rhs = subst_mapper(inst.expression)
             within_inames = frozenset(iname_map[i] if i in iname_map else i
@@ -2078,8 +2081,7 @@ def cvec_privatize(kernel, pragma_inst, vectorext_inst):
             inst = inst.copy(assignee=lhs, expression=rhs,
                                 within_inames=within_inames)
 
-        elif inst in pragma_inst:
-            # privatized pragma inames
+        elif inst.id in pragma_inst_to_tag:
             lhs = subst_mapper_simd(inst.assignee)
             rhs = subst_mapper_simd(inst.expression)
             within_inames = frozenset(iname_map_simd[i] if i in iname_map_simd else i
