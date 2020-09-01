@@ -2640,8 +2640,6 @@ def preprocess_single_kernel(kernel, callables_table, device=None):
 
     kernel = realize_ilp(kernel)
 
-    kernel = realize_c_vec(kernel)
-
     kernel = find_temporary_address_space(kernel)
 
     # boostability should be removed in 2017.x.
