@@ -1,3 +1,4 @@
 [submodule "loopy/target/c/compyte"]
 	path = loopy/target/c/compyte
-	url = https://github.com/sv2518/compyte/tree/fill-with-vectypes
+	url = https://github.com/sv2518/compyte
+	branch = fill-with-vectypes
