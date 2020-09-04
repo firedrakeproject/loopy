@@ -2018,22 +2018,24 @@ def realize_c_vec(kernel):
 
     # append one vectorised zero variable per type
     # needed for constant assignments
-    def update_kernel_with_zerovecs(name_zero_vec, kernel):
-        tmps = kernel.temporary_variables.copy()
-        types = list(set([tv.dtype for tv in tmps.values()]))
-        for type in types:
-            name = name_zero_vec+"_"+type.dtype.name
-            tmps[name] = TemporaryVariable(
-                            name,
-                            shape=auto, dtype=type, read_only=True,
-                            initializer=numpy.array(0, dtype=type.dtype),
-                            address_space=AddressSpace.LOCAL,
-                            zero_size=kernel.target.length)
-        kernel = kernel.copy(temporary_variables=tmps)
-        return kernel
+    # def update_kernel_with_zerovecs(name_zero_vec, kernel):
+    #     tmps = kernel.temporary_variables.copy()
+    #     types = list(set([tv.dtype for tv in tmps.values()]))
+    #     for t in types:
+    #         name = name_zero_vec+"_"+t.dtype.name
+    #         import numpy as np
+    #         dtype = np.dtype(dtype=[np.float64]*4)
+    #         tmps[name] = TemporaryVariable(
+    #                         name,
+    #                         shape=auto, dtype=[np.float64]*4, read_only=True,
+    #                         initializer=numpy.array(0),
+    #                         address_space=AddressSpace.LOCAL,
+    #                         zero_size=kernel.target.length)
+    #     kernel = kernel.copy(temporary_variables=tmps)
+    #     return kernel
 
-    name_zero_vec = "zero_vec"
-    kernel = update_kernel_with_zerovecs(name_zero_vec, kernel)
+    # name_zero_vec = "zero_vec"
+    # kernel = update_kernel_with_zerovecs(name_zero_vec, kernel)
 
     # any variable not in subscript?
     class OutsideVariableFinder(IdentityMapper):
@@ -2222,11 +2224,12 @@ def realize_c_vec(kernel):
                 avf = VariableFinder(list(inst.within_inames & set(cvec_inames)))
                 avf(inst.expression)
                 if not avf.result:
-                    import pymbolic.primitives as p
-                    tv = kernel.temporary_variables[inst.assignee.aggregate.name]
-                    type = tv.dtype.dtype.name
-                    rhs = inst.expression + p.Variable(name_zero_vec+"_"+type)
-                    inst = inst.copy(expression=rhs)
+                    # import pymbolic.primitives as p
+                    # tv = kernel.temporary_variables[inst.assignee.aggregate.name]
+                    # type = tv.dtype.dtype.name
+                    # rhs = inst.expression + p.Variable(name_zero_vec+"_"+type)
+                    # inst = inst.copy(expression=rhs)
+                    can_vectorize = False
 
             if can_vectorize:
                 lhs = subst_mapper(inst.assignee)
