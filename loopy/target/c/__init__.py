@@ -1226,15 +1226,12 @@ class DTypeRegistryWrapperVec(DTypeRegistryWrapper):
         super(DTypeRegistryWrapperVec, self).__init__(wrapped_registry)
 
     def dtype_to_ctype(self, dtype):
-        base = self.dtype_to_ctype_base(dtype)
-        # two worded typed need to be merged to one word
-        # so that vector type can be defined afterwards
-        if len(base.split()) > 1:
-            base = "".join([word[0] for word in base.split()])
-        if dtype.dtype.shape:
-            shape, = dtype.dtype.shape
-            return base + str(shape)
-        return base
+        shape = dtype.dtype.shape
+        if shape != ():
+            # needs to match new_names in create_vector_types
+            shortform = dtype.dtype.base.kind + str(dtype.dtype.base.itemsize)
+            return "v"+str(shape[0])+shortform
+        return self.dtype_to_ctype_base(dtype)
     
     def dtype_to_ctype_base(self, dtype):
         return super(DTypeRegistryWrapperVec, self).dtype_to_ctype(
