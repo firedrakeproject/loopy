@@ -91,28 +91,16 @@ def c99_preamble_generator(preamble_info):
 
 
 def cvec_preamble_generator(preamble_info):
-    vec_typedef = []
-    twoword_typedef = []
-    batch_size = preamble_info.kernel.target.length
+    preamble = ""
     type_register = preamble_info.kernel.target.get_dtype_registry()
-    bbytes = "BYTES"
     for dtype in preamble_info.seen_dtypes:
-        shortform = type_register.dtype_to_ctype(dtype)
-        base = type_register.dtype_to_ctype_base(dtype)
-        # two worded typed need to be merged to one word
-        # so that vector type can be defined afterwards
-        # the new one worded type is defined here
-        if len(base.split()) > 1:
-            twoword_typedef += ["typedef " + base + " " + shortform + ";"]
-        bytes = dtype.dtype.alignment
-        if batch_size > 1:
-            st1 = "#define {0}{2} ({1}*{2})".format(bbytes, batch_size, bytes)
-            vec_typedef += [st1]
-            st2 = "typedef {0} {0}{1} __attribute__ ((vector_size ({2}{3})));"
-            vec_typedef += [st2.format(shortform, batch_size, bbytes, bytes)]
-    preamble_tw = "\n" + "\n".join(twoword_typedef)
-    preamble_vec = "\n" + "\n".join(vec_typedef)
-    yield("vec_types", preamble_tw + preamble_vec)
+        if dtype.dtype.shape != ():
+            base_name = type_register.dtype_to_ctype_base(dtype)
+            vec_name = type_register.dtype_to_ctype(dtype)
+            n_to_d = type_register.wrapped_registry.name_to_dtype
+            definition = [k for k, v in n_to_d.items() if v.kind == "V" if v.names[0] == vec_name]
+            preamble += "typedef {0} {1};\n".format(base_name, definition[0])
+    yield("vec_types", preamble)
 
 
 def _preamble_generator(preamble_info):
