@@ -1288,7 +1288,7 @@ class CVecTarget(CTarget):
 
     @memoize_method
     def get_dtype_registry(self):
-        from loopy.target.c.compyte.dtypes import (
+        from .loopy.target.c.compyte.dtypes import (
                 DTypeRegistry, fill_registry_with_c_types,
                 fill_registry_with_c99_complex_types,
                 fill_registry_with_cvec_types)
