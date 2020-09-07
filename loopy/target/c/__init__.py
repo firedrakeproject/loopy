@@ -1210,25 +1210,6 @@ class ExecutableCTarget(CTarget):
 # }}}
 
 # {{{ c target with vector extension
-
-
-class DTypeRegistryWrapperVec(DTypeRegistryWrapper):
-    def __init__(self, wrapped_registry):
-        super(DTypeRegistryWrapperVec, self).__init__(wrapped_registry)
-
-    def dtype_to_ctype(self, dtype):
-        shape = dtype.dtype.shape
-        if shape != ():
-            # needs to match new_names in create_vector_types
-            shortform = dtype.dtype.base.kind + str(dtype.dtype.base.itemsize)
-            return "v"+str(shape[0])+shortform
-        return self.dtype_to_ctype_base(dtype)
-    
-    def dtype_to_ctype_base(self, dtype):
-        return super(DTypeRegistryWrapperVec, self).dtype_to_ctype(
-                NumpyType(dtype.dtype.base))
-
-
 class CVecASTBuilder(CASTBuilder):
 
     def preamble_generators(self):
