@@ -99,7 +99,10 @@ def cvec_preamble_generator(preamble_info):
             vec_name = type_register.dtype_to_ctype(dtype)
             n_to_d = type_register.wrapped_registry.name_to_dtype
             definition = [k for k, v in n_to_d.items() if v.kind == "V" if v.names[0] == vec_name]
-            preamble += "typedef {0} {1};\n".format(base_name, definition[0])
+            size = dtype.itemsize
+            preamble += "typedef %s %s " % (base_name, definition[0])
+            preamble += "__attribute__((vector_size(%d)));\n" % size
+
     yield("vec_types", preamble)
 
 
