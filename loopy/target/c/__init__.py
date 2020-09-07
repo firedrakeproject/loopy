@@ -93,16 +93,12 @@ def c99_preamble_generator(preamble_info):
 def cvec_preamble_generator(preamble_info):
     preamble = ""
     type_register = preamble_info.kernel.target.get_dtype_registry()
-    for dtype in preamble_info.seen_dtypes:
-        if dtype.dtype.shape != ():
-            base_name = type_register.dtype_to_ctype_base(dtype)
-            vec_name = type_register.dtype_to_ctype(dtype)
-            n_to_d = type_register.wrapped_registry.name_to_dtype
-            definition = [k for k, v in n_to_d.items() if v.kind == "V" if v.names[0] == vec_name]
-            size = dtype.itemsize
-            preamble += "typedef %s %s " % (base_name, definition[0])
-            preamble += "__attribute__((vector_size(%d)));\n" % size
-
+    has_shape = lambda dtype: True if dtype.dtype.shape != () else False
+    for dtype in filter(has_shape, preamble_info.seen_dtypes):
+        base_name = type_register.wrapped_registry.dtype_to_name[dtype.dtype.base]
+        new_name = type_register.wrapped_registry.dtype_to_name[dtype.dtype]
+        preamble += ("typedef %s %s __attribute__((vector_size(%d)));\n" % 
+                        (base_name, new_name, dtype.itemsize))
     yield("vec_types", preamble)
 
 
