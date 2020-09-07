@@ -1259,7 +1259,7 @@ class CVecTarget(CTarget):
                 include_bool=True)
         fill_registry_with_c99_complex_types(result)
         fill_registry_with_cvec_types(result)
-        return DTypeRegistryWrapperVec(result)
+        return DTypeRegistryWrapper(result)
 
     def get_device_ast_builder(self):
         return CVecASTBuilder(self)
