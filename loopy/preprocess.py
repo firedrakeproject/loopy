@@ -2153,8 +2153,8 @@ def realize_c_vec(kernel):
     # TODO: find vector version of these function calls
     func_names = set(["abs_*", "fabs_*", "cos_*", "sin_*", "exp_*", "pow_*",
                       "sqrt_*", "fmax_*", "fmin_*", "atan2_*", "log_*",
-                      "tanh_*", "inv_*"])
-    batched_func_names = set(["inv_*"])
+                      "tanh_*", "inv_*", "solve_*"])
+    batched_func_names = set(["inv_*", "solve_*"])
     function_finder = VariableFinder(func_names, regex=True)
     batched_function_finder = VariableFinder(batched_func_names, regex=True)
     globals = [name for name, arg in kernel.arg_dict.items()
