@@ -1252,8 +1252,7 @@ class CVecTarget(CTarget):
     def get_dtype_registry(self):
         from loopy.target.c.compyte.dtypes import (
                 DTypeRegistry, fill_registry_with_c_types,
-                fill_registry_with_c99_complex_types,
-                fill_registry_with_cvec_types)
+                fill_registry_with_c99_complex_types)
         result = DTypeRegistry()
         fill_registry_with_c_types(result, respect_windows=False,
                 include_bool=True)
@@ -1263,6 +1262,26 @@ class CVecTarget(CTarget):
 
     def get_device_ast_builder(self):
         return CVecASTBuilder(self)
+
+def _create_vector_types():
+    names_and_dtypes = []
+
+    for base_type in [np.int8, np.uint8, np.int16, np.uint16,
+                      np.int32, np.uint32, np.int64, np.uint64,
+                      np.float32, np.float64]:
+
+        for count in [2, 3, 4, 8, 16]:
+
+            base_dtype = np.dtype(base_type)
+            name = "v%d%s%d" % (count, base_dtype.kind, base_dtype.itemsize)
+            dtype = np.dtype((base_dtype, count))
+            names_and_dtypes.append((dtype, name))
+    return names_and_dtypes
+
+
+def fill_registry_with_cvec_types(reg):
+    for dtype, name in _create_vector_types():
+        reg.get_or_register_dtype(name, dtype)
 
 # }}}
 
