@@ -2172,7 +2172,10 @@ def realize_c_vec(kernel):
             # reduction over globals are sequentialized
             if can_vectorize and globals:
                 gbf.result = False
-                gbf(inst.assignee)
+                if not isinstance(inst, CallInstruction):
+                    gbf(inst.assignee)
+                else:
+                    gbf(inst.assignees[0])
                 if gbf.result:
                     can_vectorize = False
 
