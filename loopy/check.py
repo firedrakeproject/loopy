@@ -775,7 +775,7 @@ def pre_schedule_checks(kernel, callables_table):
         check_insn_attributes(kernel)
         check_loop_priority_inames_known(kernel)
         check_multiple_tags_allowed(kernel)
-        check_for_inactive_iname_access(kernel)
+        # check_for_inactive_iname_access(kernel)
         check_for_write_races(kernel)
         check_for_data_dependent_parallel_bounds(kernel)
         check_bounds(kernel)
