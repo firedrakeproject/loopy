@@ -2212,7 +2212,12 @@ def realize_c_vec(kernel):
 
                     if not isinstance(ary.dim_tags[-1], VectorArrayDimTag):
                         sf = SubscriptFinder(ary.name, set(cvec_inames))
-                        sf(inst.assignee)
+
+                        if not isinstance(inst, CallInstruction):
+                            sf(inst.assignee)
+                        else:
+                            can_vectorize = False
+                            break
                         sf(inst.expression)
                         if sf.result:
                             can_vectorize = False
