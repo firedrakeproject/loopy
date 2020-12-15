@@ -1518,8 +1518,8 @@ class LoopKernel(ImmutableRecordWithoutPickling):
 
     def __hash__(self):
         from loopy.tools import LoopyKeyBuilder
-        from pytools.persistent_dict import new_hash
-        key_hash = new_hash()
+        from hashlib import sha256
+        key_hash = sha256()
         self.update_persistent_hash(key_hash, LoopyKeyBuilder())
         return hash(key_hash.digest())
 
