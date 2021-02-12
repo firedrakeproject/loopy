@@ -276,23 +276,26 @@ class KernelInliner(SubstitutionMapper):
                 caller_arg = self.caller.temporary_variables[aggregate.name]
 
             # Firstly, map inner inames to outer inames.
-            outer_indices = self.map_tuple(expr.index_tuple)
-
-            # Next, reshape to match dimension of outer arrays.
-            # We can have e.g. A[3, 2] from outside and B[6] from inside
             from numbers import Integral
-            if not all(isinstance(d, Integral) for d in callee_arg.shape):
-                raise LoopyError(
-                    "Argument: {0} in callee kernel does not have "
-                    "constant shape.".format(callee_arg))
+            outer_indices = self.map_tuple(expr.index_tuple)
+            if not all(isinstance(d, Integral) for d in expr.index_tuple) or len(outer_indices)>1:
 
-            flatten_index = 0
-            for i, idx in enumerate(sar.get_begin_subscript().index_tuple):
-                flatten_index += idx*caller_arg.dim_tags[i].stride
+                # Next, reshape to match dimension of outer arrays.
+                # We can have e.g. A[3, 2] from outside and B[6] from inside
+                if not all(isinstance(d, Integral) for d in callee_arg.shape):
+                    raise LoopyError(
+                        "Argument: {0} in callee kernel does not have "
+                        "constant shape.".format(callee_arg))
 
-            flatten_index += sum(
-                idx * tag.stride
-                for idx, tag in zip(outer_indices, callee_arg.dim_tags))
+                flatten_index = 0
+                for i, idx in enumerate(sar.get_begin_subscript().index_tuple):
+                    flatten_index += idx*caller_arg.dim_tags[i].stride
+
+                flatten_index += sum(
+                    idx * tag.stride
+                    for idx, tag in zip(outer_indices, callee_arg.dim_tags))
+            else:
+                flatten_index = sum(expr.index_tuple)
 
             from loopy.isl_helpers import simplify_via_aff
             flatten_index = simplify_via_aff(flatten_index)
