@@ -415,9 +415,11 @@ class CMathCallable(ScalarCallable):
 
     _real_map = {
         np.dtype(np.complex64): np.dtype(np.float32),
-        np.dtype(np.complex128): np.dtype(np.float64),
-        np.dtype(np.complex256): np.dtype(np.float128)
+        np.dtype(np.complex128): np.dtype(np.float64)
     }
+    if hasattr(np, "complex256"):
+        _real_map[np.dtype(np.complex256)] = np.dtype(np.float128)
+
 
     def generate_preambles(self, target):
         if self.name_in_target.startswith("loopy_" + self.name):
