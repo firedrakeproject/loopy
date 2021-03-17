@@ -495,7 +495,8 @@ class CMathCallable(ScalarCallable):
                     pass  # fabs
                 elif dtype in [np.float32, np.complex64]:
                     name = name + "f"  # fminf
-                elif dtype in [np.float128, np.complex256]:
+                elif ((hasattr(np, "float128") and dtype == np.float128) or
+                      (hasattr(np, "complex256") and dtype == np.complex256)):  # pylint:disable=no-member
                     name = name + "l"  # fminl
                 else:
                     raise LoopyTypeError("%s does not support type %s" % (name,
@@ -548,7 +549,8 @@ class CMathCallable(ScalarCallable):
                         pass  # fabs
                     elif dtype in [np.float32, np.complex64]:
                         name = name + "f"  # fminf
-                    elif dtype in [np.float128, np.complex256]:
+                    elif ((hasattr(np, "float128") and dtype == np.float128) or
+                          (hasattr(np, "complex256") and dtype == np.complex256)):  # pylint:disable=no-member
                         name = name + "l"  # fminl
                     else:
                         raise LoopyTypeError("%s does not support type %s"
