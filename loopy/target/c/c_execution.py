@@ -300,7 +300,31 @@ class CPlusPlusCompiler(CCompiler):
             library_dirs=library_dirs, defines=defines, source_suffix=source_suffix)
 
 
-class IDIToCDLL(object):
+# {{{ placeholder till ctypes fixes: bugs.python.org/issue16899
+
+class Complex64(ctypes.Structure):
+    _fields_ = [("real", ctypes.c_float), ("imag", ctypes.c_float)]
+
+
+class Complex128(ctypes.Structure):
+    _fields_ = [("real", ctypes.c_double), ("imag", ctypes.c_double)]
+
+
+class Complex256(ctypes.Structure):
+    _fields_ = [("real", ctypes.c_longdouble), ("imag", ctypes.c_longdouble)]
+
+
+_NUMPY_COMPLEX_TYPE_TO_CTYPE = {
+        np.complex64: Complex64,
+        np.complex128: Complex128,
+        }
+if hasattr(np, "complex256"):
+    _NUMPY_COMPLEX_TYPE_TO_CTYPE[np.complex256] = Complex256
+
+# }}}
+
+
+class IDIToCDLL:
     """
     A utility class that extracts arguement and return type info from a
     :class:`ImplementedDataInfo` in order to create a :class:`ctype.CDLL`
@@ -322,9 +346,12 @@ class IDIToCDLL(object):
 
     def _dtype_to_ctype(self, dtype, pointer=False):
         """Map NumPy dtype to equivalent ctypes type."""
-        typename = self.registry.dtype_to_ctype(dtype)
-        typename = {'unsigned': 'uint'}.get(typename, typename)
-        basetype = getattr(ctypes, 'c_' + typename)
+        if dtype.is_complex():
+            # complex ctypes aren't exposed
+            np_dtype = dtype.numpy_dtype.type
+            basetype = _NUMPY_COMPLEX_TYPE_TO_CTYPE[np_dtype]
+        else:
+            basetype = np.ctypeslib.as_ctypes_type(dtype)
         if pointer:
             return ctypes.POINTER(basetype)
         return basetype

@@ -416,8 +416,9 @@ class CMathCallable(ScalarCallable):
     _real_map = {
         np.dtype(np.complex64): np.dtype(np.float32),
         np.dtype(np.complex128): np.dtype(np.float64),
-        np.dtype(np.complex256): np.dtype(np.float128)
     }
+    if hasattr(np, "complex256"):
+        _real_map[np.dtype(np.complex256)] = np.dtype(np.float128)
 
     def generate_preambles(self, target):
         if self.name_in_target.startswith("loopy_" + self.name):
@@ -495,7 +496,8 @@ class CMathCallable(ScalarCallable):
                     pass  # fabs
                 elif dtype in [np.float32, np.complex64]:
                     name = name + "f"  # fminf
-                elif dtype in [np.float128, np.complex256]:
+                elif ((hasattr(np, "float128") and dtype == np.float128) or
+                      (hasattr(np, "complex256") and dtype == np.complex256)):  # pylint:disable=no-member
                     name = name + "l"  # fminl
                 else:
                     raise LoopyTypeError("%s does not support type %s" % (name,
@@ -548,7 +550,8 @@ class CMathCallable(ScalarCallable):
                         pass  # fabs
                     elif dtype in [np.float32, np.complex64]:
                         name = name + "f"  # fminf
-                    elif dtype in [np.float128, np.complex256]:
+                    elif ((hasattr(np, "float128") and dtype == np.float128) or
+                          (hasattr(np, "complex256") and dtype == np.complex256)):  # pylint:disable=no-member
                         name = name + "l"  # fminl
                     else:
                         raise LoopyTypeError("%s does not support type %s"
