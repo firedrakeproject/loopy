@@ -322,7 +322,7 @@ def _inline_call_instruction(caller_kernel, callee_knl, instruction):
     Returns a copy of *kernel* with the *instruction* in the *kernel*
     replaced by inlining :attr:`subkernel` within it.
     """
-    callee_label = callee_knl.name[:4] + "_"
+    callee_label = callee_knl.name + "_"
 
     # {{{ duplicate and rename inames
 
