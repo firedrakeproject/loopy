@@ -925,6 +925,12 @@ class SweptInameStrideCollector(CoefficientCollectorBase):
             return {1: expr}
 
         return super().map_algebraic_leaf(expr)
+    
+    def map_floor_div(self, expr):
+         from warnings import warn
+         warn("_IndexStrideCoefficientCollector encountered FloorDiv, ignoring "
+              "denominator in expression %s" % (expr))
+         return self.rec(expr.denominator)
 
 
 def get_start_subscript_from_sar(sar, kernel):
