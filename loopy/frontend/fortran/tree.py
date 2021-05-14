@@ -1,5 +1,3 @@
-from __future__ import division, with_statement
-
 __copyright__ = "Copyright (C) 2009 Andreas Kloeckner"
 
 __license__ = """
@@ -27,7 +25,7 @@ import re
 from loopy.diagnostic import LoopyError
 
 
-class FTreeWalkerBase(object):
+class FTreeWalkerBase:
     def __init__(self, filename):
         from loopy.frontend.fortran.expression import FortranExpressionParser
         self.expr_parser = FortranExpressionParser(self)
@@ -53,8 +51,10 @@ class FTreeWalkerBase(object):
                     type(expr)))
 
     ENTITY_RE = re.compile(
-            r"^(?P<name>[_0-9a-zA-Z]+)"
-            r"(\((?P<shape>[-+*0-9:a-zA-Z, \t]+)\))?$")
+            r"^(?P<name>[_0-9a-zA-Z]+)\s*"
+            r"(\((?P<shape>[-+*/0-9:a-zA-Z, \t]+)\))?"
+            r"(\s*=\s*(?P<initializer>.+))?"
+            "$")
 
     def parse_dimension_specs(self, node, dim_decls):
         def parse_bounds(bounds_str):
@@ -77,7 +77,31 @@ class FTreeWalkerBase(object):
             else:
                 shape = None
 
-            yield name, shape
+            init_str = groups["initializer"]
+            if init_str:
+                init_str = init_str.replace("(/", "[")
+                init_str = init_str.replace("/)", "]")
+                init_expr = self.parse_expr(node, init_str)
+
+                from numbers import Number
+                if isinstance(init_expr, Number):
+                    initializer = init_expr
+                elif isinstance(init_expr, list):
+                    for i, item in enumerate(init_expr):
+                        if not isinstance(item, Number):
+                            raise LoopyError("unexpected type of "
+                                    "item %d in initializer: %s"
+                                    % (i+1, type(init_expr).__name__))
+                    initializer = init_expr
+
+                else:
+                    raise LoopyError("unexpected type of initializer: %s"
+                            % type(init_expr).__name__)
+
+            else:
+                initializer = None
+
+            yield name, shape, initializer
 
     def __call__(self, expr, *args, **kwargs):
         return self.rec(expr, *args, **kwargs)

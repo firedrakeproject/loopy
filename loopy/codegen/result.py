@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import
-
 __copyright__ = "Copyright (C) 2016 Andreas Kloeckner"
 
 __license__ = """
@@ -22,7 +20,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import six
 from pytools import ImmutableRecord
 
 
@@ -41,6 +38,19 @@ def process_preambles(preambles):
     return [
             remove_common_indentation(lines) + "\n"
             for lines in dedup_preambles]
+
+
+__doc__ = """
+.. currentmodule:: loopy.codegen.result
+
+.. autoclass:: GeneratedProgram
+
+.. autoclass:: CodeGenerationResult
+
+.. autofunction:: merge_codegen_results
+
+.. autofunction:: generate_host_or_device_program
+"""
 
 
 # {{{ code generation result
@@ -133,7 +143,7 @@ class CodeGenerationResult(ImmutableRecord):
         preamble_codes = process_preambles(
                 getattr(self, "host_preambles", [])
                 +
-                list(getattr(self, "device_preambles", []))
+                getattr(self, "device_preambles", [])
                 )
 
         return (
@@ -218,7 +228,7 @@ def merge_codegen_results(codegen_state, elements, collapse=True):
                         el.current_program(codegen_state).name
                         == codegen_result.current_program(codegen_state).name)
 
-            for insn_id, idoms in six.iteritems(el.implemented_domains):
+            for insn_id, idoms in el.implemented_domains.items():
                 implemented_domains.setdefault(insn_id, []).extend(idoms)
 
             if not codegen_state.is_generating_device_code:
@@ -292,8 +302,8 @@ def generate_host_or_device_program(codegen_state, schedule_index):
     else:
         codegen_result = build_loop_nest(codegen_state, schedule_index)
 
-    if (codegen_state.is_generating_device_code) or (
-            codegen_state.kernel.is_called_from_host):
+    if (codegen_state.is_generating_device_code
+            or codegen_state.is_entrypoint):
         codegen_result = merge_codegen_results(
                 codegen_state,
                 ast_builder.generate_top_of_body(codegen_state)
@@ -315,9 +325,6 @@ def generate_host_or_device_program(codegen_state, schedule_index):
                 cur_prog.copy(
                     ast=ast_builder.process_ast(fdef_ast),
                     body_ast=ast_builder.process_ast(body_ast)))
-    else:
-        codegen_result = codegen_result.copy(
-                host_program=None)
 
     return codegen_result
 

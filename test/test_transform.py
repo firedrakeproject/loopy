@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import, print_function
-
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
 __license__ = """
@@ -45,7 +43,7 @@ from pyopencl.tools import pytest_generate_tests_for_pyopencl \
 
 __all__ = [
         "pytest_generate_tests",
-        "cl"  # 'cl.create_some_context'
+        "cl"  # "cl.create_some_context"
         ]
 
 
@@ -74,7 +72,7 @@ def test_collect_common_factors(ctx_factory):
     ctx = ctx_factory()
 
     knl = lp.make_kernel(
-            "{[i,j,k]: 0<=i,j<n}",
+            "{[i,j]: 0<=i,j<n}",
             """
             <float32> out_tmp = 0 {id=out_init,inames=i}
             out_tmp = out_tmp + alpha[i]*a[i,j]*b1[j] {id=out_up1,dep=out_init}
@@ -98,8 +96,8 @@ def test_to_batched(ctx_factory):
     queue = cl.CommandQueue(ctx)
 
     knl = lp.make_kernel(
-         ''' { [i,j]: 0<=i,j<n } ''',
-         ''' out[i] = sum(j, a[i,j]*x[j])''')
+         """ { [i,j]: 0<=i,j<n } """,
+         """ out[i] = sum(j, a[i,j]*x[j])""")
     knl = lp.add_and_infer_dtypes(knl, dict(out=np.float32,
                                             x=np.float32,
                                             a=np.float32))
@@ -107,8 +105,8 @@ def test_to_batched(ctx_factory):
     bknl = lp.to_batched(knl, "nbatches", "out,x")
 
     ref_knl = lp.make_kernel(
-         ''' { [i,j,k]: 0<=i,j<n and 0<=k<nbatches} ''',
-         '''out[k, i] = sum(j, a[i,j]*x[k, j])''')
+         """ { [i,j,k]: 0<=i,j<n and 0<=k<nbatches} """,
+         """out[k, i] = sum(j, a[i,j]*x[k, j])""")
     ref_knl = lp.add_and_infer_dtypes(ref_knl, dict(out=np.float32,
                                                     x=np.float32,
                                                     a=np.float32))
@@ -127,50 +125,38 @@ def test_to_batched(ctx_factory):
 def test_to_batched_temp(ctx_factory):
     ctx = ctx_factory()
 
-    prog = lp.make_kernel(
-         ''' { [i,j]: 0<=i,j<n } ''',
-         ''' cnst = 2.0
-         out[i] = sum(j, cnst*a[i,j]*x[j])''',
+    knl = lp.make_kernel(
+         """ { [i,j]: 0<=i,j<n } """,
+         """ cnst = 2.0
+         out[i] = sum(j, cnst*a[i,j]*x[j])""",
          [lp.TemporaryVariable(
              "cnst",
              dtype=np.float32,
              shape=(),
-             address_space=lp.AddressSpace.PRIVATE), '...'])
-    prog = lp.add_and_infer_dtypes(prog, dict(out=np.float32,
+             address_space=lp.AddressSpace.PRIVATE), "..."])
+    knl = lp.add_and_infer_dtypes(knl, dict(out=np.float32,
                                             x=np.float32,
                                             a=np.float32))
-    ref_prog = lp.make_kernel(
-         ''' { [i,j]: 0<=i,j<n } ''',
-         '''out[i] = sum(j, 2.0*a[i,j]*x[j])''')
-    ref_prog = lp.add_and_infer_dtypes(ref_prog, dict(out=np.float32,
+    ref_knl = lp.make_kernel(
+         """ { [i,j]: 0<=i,j<n } """,
+         """out[i] = sum(j, 2.0*a[i,j]*x[j])""")
+    ref_knl = lp.add_and_infer_dtypes(ref_knl, dict(out=np.float32,
                                                     x=np.float32,
                                                     a=np.float32))
 
-    bprog = lp.to_batched(prog, "nbatches", "out,x")
-    bref_prog = lp.to_batched(ref_prog, "nbatches", "out,x")
+    bknl = lp.to_batched(knl, "nbatches", "out,x")
+    bref_knl = lp.to_batched(ref_knl, "nbatches", "out,x")
 
     # checking that cnst is not being bathced
-    assert bprog.root_kernel.temporary_variables['cnst'].shape == ()
+    assert bknl["loopy_kernel"].temporary_variables["cnst"].shape == ()
 
     a = np.random.randn(5, 5)
     x = np.random.randn(7, 5)
 
     # Checking that the program compiles and the logic is correct
     lp.auto_test_vs_ref(
-            bref_prog, ctx, bprog,
+            bref_knl, ctx, bknl,
             parameters=dict(a=a, x=x, n=5, nbatches=7))
-
-
-def test_save_temporaries_in_loop(ctx_factory):
-
-    prog = lp.make_kernel(
-            "{[i, j]: 0 <= i, j < 4}",
-            """
-            <> a[j] = j {inames=i:j}
-            """)
-
-    prog = lp.save_temporaries_in_loop(prog, 'i', ['a'])
-    assert prog.root_kernel.temporary_variables['a'].shape == (4, 4)
 
 
 def test_add_barrier(ctx_factory):
@@ -199,8 +185,8 @@ def test_rename_argument(ctx_factory):
     queue = cl.CommandQueue(ctx)
 
     kernel = lp.make_kernel(
-         '''{ [i]: 0<=i<n }''',
-         '''out[i] = a + 2''')
+         """{ [i]: 0<=i<n }""",
+         """out[i] = a + 2""")
 
     kernel = lp.rename_argument(kernel, "a", "b")
 
@@ -211,14 +197,14 @@ def test_rename_argument(ctx_factory):
 
 def test_fusion():
     exp_kernel = lp.make_kernel(
-         ''' { [i]: 0<=i<n } ''',
-         ''' exp[i] = pow(E, z[i])''',
+         """ { [i]: 0<=i<n } """,
+         """ exp[i] = pow(E, z[i])""",
          assumptions="n>0")
 
     sum_kernel = lp.make_kernel(
-        '{ [j]: 0<=j<n }',
-        'out2 = sum(j, exp[j])',
-        assumptions='n>0')
+        "{ [j]: 0<=j<n }",
+        "out2 = sum(j, exp[j])",
+        assumptions="n>0")
 
     knl = lp.fuse_kernels([exp_kernel, sum_kernel])
 
@@ -290,7 +276,7 @@ def test_extract_subst(ctx_factory):
             "{[i]: 0<=i<n}",
             """
                 a[i] = 23*b[i]**2 + 25*b[i]**2
-                """)
+                """, name="extract_subst")
 
     prog = lp.extract_subst(prog, "bsquare", "alpha*b[i]**2", "alpha")
 
@@ -298,7 +284,7 @@ def test_extract_subst(ctx_factory):
 
     from loopy.symbolic import parse
 
-    insn, = prog.root_kernel.instructions
+    insn, = prog["extract_subst"].instructions
     assert insn.expression == parse("bsquare(23) + bsquare(25)")
 
 
@@ -374,7 +360,7 @@ def test_precompute_confusing_subst_arguments(ctx_factory):
         """
         D(i):=a[i+1]-a[i]
         b[i,j] = D(j)
-        """)
+        """, name="precomputer")
 
     prog = lp.add_and_infer_dtypes(prog, dict(a=np.float32))
 
@@ -385,8 +371,9 @@ def test_precompute_confusing_subst_arguments(ctx_factory):
 
     from loopy.symbolic import get_dependencies
     assert "i_inner" not in get_dependencies(
-            prog.root_kernel.substitutions["D"].expression)
-    prog = lp.precompute(prog, "D")
+            prog["precomputer"].substitutions["D"].expression)
+    prog = lp.precompute(prog, "D", sweep_inames="j",
+            precompute_outer_inames="j, i_inner, i_outer")
 
     lp.auto_test_vs_ref(
             ref_prog, ctx, prog,
@@ -397,35 +384,34 @@ def test_precompute_nested_subst(ctx_factory):
     ctx = ctx_factory()
 
     prog = lp.make_kernel(
-        "{[i,j]: 0<=i<n and 0<=j<5}",
+        "{[i]: 0<=i<n}",
         """
         E:=a[i]
         D:=E*E
         b[i] = D
-        """)
+        """, name="precomputer")
 
     prog = lp.add_and_infer_dtypes(prog, dict(a=np.float32))
 
     ref_prog = prog
 
-    prog = lp.tag_inames(prog, dict(j="g.1"))
     prog = lp.split_iname(prog, "i", 128, outer_tag="g.0", inner_tag="l.0")
 
     from loopy.symbolic import get_dependencies
     assert "i_inner" not in get_dependencies(
-            prog.root_kernel.substitutions["D"].expression)
+            prog["precomputer"].substitutions["D"].expression)
     prog = lp.precompute(prog, "D", "i_inner", default_tag="l.auto")
 
     # There's only one surviving 'E' rule.
     assert len([
         rule_name
-        for rule_name in prog.root_kernel.substitutions
+        for rule_name in prog["precomputer"].substitutions
         if rule_name.startswith("E")]) == 1
 
     # That rule should use the newly created prefetch inames,
     # not the prior 'i_inner'
     assert "i_inner" not in get_dependencies(
-            prog.root_kernel.substitutions["E"].expression)
+            prog["precomputer"].substitutions["E"].expression)
 
     lp.auto_test_vs_ref(
             ref_prog, ctx, prog,
@@ -504,7 +490,7 @@ def test_add_nosync():
 
         <>tmp5[i] = 0 {id=insn5,groups=g1}
         tmp5[i] = 1 {id=insn6,conflicts=g1}
-        """)
+        """, name="nosync")
 
     orig_prog = lp.set_temporary_scope(orig_prog, "tmp3", "local")
     orig_prog = lp.set_temporary_scope(orig_prog, "tmp5", "local")
@@ -513,27 +499,27 @@ def test_add_nosync():
     prog = lp.add_nosync(orig_prog, "any", "writes:tmp", "writes:tmp2",
             empty_ok=True)
     assert frozenset() == (
-            prog.root_kernel.id_to_insn["insn2"].no_sync_with)
+            prog["nosync"].id_to_insn["insn2"].no_sync_with)
 
     # Dependency present
     prog = lp.add_nosync(orig_prog, "local", "writes:tmp3", "reads:tmp3")
     assert frozenset() == (
-            prog.root_kernel.id_to_insn["insn3"].no_sync_with)
+            prog["nosync"].id_to_insn["insn3"].no_sync_with)
     assert frozenset([("insn3", "local")]) == (
-            prog.root_kernel.id_to_insn["insn4"].no_sync_with)
+            prog["nosync"].id_to_insn["insn4"].no_sync_with)
 
     # Bidirectional
     prog = lp.add_nosync(
             orig_prog, "local", "writes:tmp3", "reads:tmp3", bidirectional=True)
     assert frozenset([("insn4", "local")]) == (
-            prog.root_kernel.id_to_insn["insn3"].no_sync_with)
+            prog["nosync"].id_to_insn["insn3"].no_sync_with)
     assert frozenset([("insn3", "local")]) == (
-            prog.root_kernel.id_to_insn["insn4"].no_sync_with)
+            prog["nosync"].id_to_insn["insn4"].no_sync_with)
 
     # Groups
     prog = lp.add_nosync(orig_prog, "local", "insn5", "insn6")
     assert frozenset([("insn5", "local")]) == (
-            prog.root_kernel.id_to_insn["insn6"].no_sync_with)
+            prog["nosync"].id_to_insn["insn6"].no_sync_with)
 
 
 def test_uniquify_instruction_ids():
@@ -542,14 +528,14 @@ def test_uniquify_instruction_ids():
     i3 = lp.Assignment("b", 1, id=lp.UniqueName("b"))
     i4 = lp.Assignment("b", 1, id=lp.UniqueName("b"))
 
-    prog = lp.make_kernel("{[i]: i = 1}", [])
-    new_root_kernel = prog.root_kernel.copy(instructions=[i1, i2, i3, i4])
-    prog = prog.with_root_kernel(new_root_kernel)
+    prog = lp.make_kernel("{[i]: i = 1}", [], name="lpy_knl")
+    new_root_kernel = prog["lpy_knl"].copy(instructions=[i1, i2, i3, i4])
+    prog = prog.with_kernel(new_root_kernel)
 
     from loopy.transform.instruction import uniquify_instruction_ids
     prog = uniquify_instruction_ids(prog)
 
-    insn_ids = set(insn.id for insn in prog.root_kernel.instructions)
+    insn_ids = {insn.id for insn in prog["lpy_knl"].instructions}
 
     assert len(insn_ids) == 4
     assert all(isinstance(id, str) for id in insn_ids)
@@ -561,22 +547,22 @@ def test_split_iname_only_if_in_within():
             """
             c[i] = 3*d[i] {id=to_split}
             a[i] = 2*b[i] {id=not_to_split}
-            """)
+            """, name="splitter")
 
-    prog = lp.split_iname(prog, "i", 4, within='id:to_split')
+    prog = lp.split_iname(prog, "i", 4, within="id:to_split")
 
-    for insn in prog.root_kernel.instructions:
-        if insn.id == 'to_split':
-            assert insn.within_inames == frozenset({'i_outer', 'i_inner'})
-        if insn.id == 'not_to_split':
-            assert insn.within_inames == frozenset({'i'})
+    for insn in prog["splitter"].instructions:
+        if insn.id == "to_split":
+            assert insn.within_inames == frozenset({"i_outer", "i_inner"})
+        if insn.id == "not_to_split":
+            assert insn.within_inames == frozenset({"i"})
 
 
 def test_nested_substs_in_insns(ctx_factory):
     ctx = ctx_factory()
     import loopy as lp
 
-    ref_knl = lp.make_kernel(
+    ref_prg = lp.make_kernel(
         "{[i]: 0<=i<10}",
         """
         a(x) := 2 * x
@@ -586,10 +572,219 @@ def test_nested_substs_in_insns(ctx_factory):
         """
     )
 
-    knl = lp.expand_subst(ref_knl)
-    assert not knl.substitutions
+    t_unit = lp.expand_subst(ref_prg)
+    assert not any(
+            cknl.subkernel.substitutions
+            for cknl in t_unit.callables_table.values())
 
-    lp.auto_test_vs_ref(ref_knl, ctx, knl)
+    lp.auto_test_vs_ref(ref_prg, ctx, t_unit)
+
+
+def test_extract_subst_with_iname_deps_in_templ(ctx_factory):
+    knl = lp.make_kernel(
+            "{[i, j, k]: 0<=i<100 and 0<=j,k<5}",
+            """
+            y[i, j, k] = x[i, j, k]
+            """,
+            [lp.GlobalArg("x,y", shape=lp.auto, dtype=float)],
+            lang_version=(2018, 2))
+
+    knl = lp.extract_subst(knl, "rule1", "x[i, arg1, arg2]",
+            parameters=("arg1", "arg2"))
+
+    lp.auto_test_vs_ref(knl, ctx_factory(), knl)
+
+
+def test_prefetch_local_into_private():
+    # https://gitlab.tiker.net/inducer/loopy/-/issues/210
+    n = 32
+    m = 32
+    n_vecs = 32
+
+    knl = lp.make_kernel(
+        """{[k,i,j]:
+            0<=k<n_vecs and
+            0<=i<m and
+            0<=j<n}""",
+        """
+        result[i,k] = sum(j, mat[i, j] * vec[j, k])
+        """,
+        kernel_data=[
+            lp.GlobalArg("result", np.float32, shape=(m, n_vecs), order="C"),
+            lp.GlobalArg("mat", np.float32, shape=(m, n), order="C"),
+            lp.GlobalArg("vec", np.float32, shape=(n, n_vecs), order="C")
+        ],
+        assumptions="n > 0 \
+                     and m > 0 \
+                     and n_vecs > 0",
+        name="mxm"
+    )
+
+    knl = lp.fix_parameters(knl, m=m, n=n, n_vecs=n_vecs)
+    knl = lp.prioritize_loops(knl, "i,k,j")
+
+    knl = lp.add_prefetch(
+            knl, "mat", "i, j", temporary_name="s_mat", default_tag="for")
+    knl = lp.add_prefetch(
+            knl, "s_mat", "j", temporary_name="p_mat", default_tag="for")
+
+
+def test_add_inames_for_unused_hw_axes(ctx_factory):
+    ctx = ctx_factory()
+    dtype = np.float32
+    order = "F"
+
+    n = 16**3
+
+    knl = lp.make_kernel(
+            "[n] -> {[i,j]: 0<=i,j<n}",
+            [
+                """
+                <> alpha = 2.0 {id=init_alpha}
+                for i
+                  for j
+                    c[i, j] = alpha*a[i]*b[j] {id=outerproduct}
+                  end
+                end
+                """
+                ],
+            [
+                lp.GlobalArg("a", dtype, shape=("n",), order=order),
+                lp.GlobalArg("b", dtype, shape=("n",), order=order),
+                lp.GlobalArg("c", dtype, shape=("n, n"), order=order),
+                lp.ValueArg("n", np.int32, approximately=n),
+                ],
+            name="rank_one",
+            assumptions="n >= 16",
+            lang_version=(2018, 2))
+
+    ref_knl = knl
+
+    knl = lp.split_iname(knl, "i", 16,
+            outer_tag="g.0", inner_tag="l.0")
+    knl = lp.split_iname(knl, "j", 16,
+            outer_tag="g.1", inner_tag="l.1")
+
+    knl = lp.add_prefetch(knl, "a")
+    knl = lp.add_prefetch(knl, "b")
+
+    knl = lp.add_inames_for_unused_hw_axes(knl)
+
+    assert (knl["rank_one"].id_to_insn["init_alpha"].within_inames
+            == frozenset(["i_inner", "i_outer", "j_outer", "j_inner"]))
+    assert (knl["rank_one"].id_to_insn["a_fetch_rule"].within_inames
+            == frozenset(["i_inner", "i_outer", "j_outer", "j_inner"]))
+    assert (knl["rank_one"].id_to_insn["b_fetch_rule"].within_inames
+            == frozenset(["i_inner", "i_outer", "j_outer", "j_inner"]))
+
+    lp.auto_test_vs_ref(ref_knl, ctx, knl,
+            op_count=[np.dtype(dtype).itemsize*n**2/1e9], op_label=["GBytes"],
+            parameters={"n": n})
+
+
+def test_rename_argument_of_domain_params(ctx_factory):
+    knl = lp.make_kernel(
+            "{[i, j]: 0<=i<n and 0<=j<m}",
+            """
+            y[i, j] = 2.0f
+            """)
+
+    knl = lp.rename_argument(knl, "n", "N")
+    knl = lp.rename_argument(knl, "m", "M")
+
+    # renamed variables should not appear in the code
+    code_str = lp.generate_code_v2(knl).device_code()
+    assert code_str.find("int const n") == -1
+    assert code_str.find("int const m") == -1
+    assert code_str.find("int const N") != -1
+    assert code_str.find("int const M") != -1
+
+    lp.auto_test_vs_ref(knl, ctx_factory(), knl, parameters={"M": 10, "N": 4})
+
+
+def test_rename_argument_with_auto_stride(ctx_factory):
+    from loopy.kernel.array import FixedStrideArrayDimTag
+
+    ctx = ctx_factory()
+    queue = cl.CommandQueue(ctx)
+
+    knl = lp.make_kernel(
+            "{[i]: 0<=i<10}",
+            """
+            y[i] = x[i]
+            """, [lp.GlobalArg("x", dtype=float,
+                               shape=lp.auto,
+                               dim_tags=[FixedStrideArrayDimTag(lp.auto)]), ...])
+
+    knl = lp.rename_argument(knl, "x", "x_new")
+
+    code_str = lp.generate_code_v2(knl).device_code()
+    assert code_str.find("double const *__restrict__ x_new,") != -1
+    assert code_str.find("double const *__restrict__ x,") == -1
+
+    evt, (out, ) = knl(queue, x_new=np.random.rand(10))
+
+
+def test_rename_argument_with_assumptions():
+    import islpy as isl
+    knl = lp.make_kernel(
+            "{[i]: 0<=i<n_old}",
+            """
+            y[i] = 2.0f
+            """)
+    knl = lp.assume(knl, "n_old=10")
+
+    knl = lp.rename_argument(knl, "n_old", "n_new")
+    assumptions = knl["loopy_kernel"].assumptions
+
+    assert "n_old" not in assumptions.get_var_dict()
+    assert "n_new" in assumptions.get_var_dict()
+    assert (
+            (assumptions & isl.BasicSet("[n_new]->{: n_new=10}"))
+            == assumptions)
+
+
+def test_tag_iname_with_match_pattern():
+    knl = lp.make_kernel(
+            "{[i0, i1]: 0<=i0, i1<n}",
+            """
+            x[i0] = 2.0f
+            y[i1] = 2.0f
+            """)
+
+    knl = lp.tag_inames(knl, "i*:unr")
+    knl = knl["loopy_kernel"]
+    i0_tag, = knl.inames["i0"].tags
+    i1_tag, = knl.inames["i1"].tags
+
+    assert str(i0_tag) == "unr"
+    assert str(i1_tag) == "unr"
+
+
+def test_custom_iname_tag():
+    from pytools.tag import Tag
+
+    class ElementLoopTag(Tag):
+        def __str__(self):
+            return "iel"
+
+    class DOFLoopTag(Tag):
+        def __str__(self):
+            return "idof"
+
+    knl = lp.make_kernel(
+            "{[ifuzz0, ifuzz1]: 0<=ifuzz0<100 and 0<=ifuzz1<32}",
+            """
+            out_dofs[ifuzz0, ifuzz1] = 2*in_dofs[ifuzz0, ifuzz1]
+            """)
+    knl = lp.tag_inames(knl, {"ifuzz0": ElementLoopTag(), "ifuzz1": DOFLoopTag()})
+
+    knl = knl["loopy_kernel"]
+    ifuzz0_tag, = knl.inames["ifuzz0"].tags
+    ifuzz1_tag, = knl.inames["ifuzz1"].tags
+
+    assert str(ifuzz0_tag) == "iel"
+    assert str(ifuzz1_tag) == "idof"
 
 
 if __name__ == "__main__":

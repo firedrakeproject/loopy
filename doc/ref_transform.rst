@@ -87,8 +87,6 @@ Registering Library Routines
 
 .. autofunction:: register_symbol_manglers
 
-.. autofunction:: register_function_manglers
-
 Modifying Arguments
 -------------------
 
@@ -118,7 +116,7 @@ Finishing up
 
 .. autofunction:: generate_loop_schedules
 
-.. autofunction:: get_one_scheduled_kernel
+.. autofunction:: get_one_linearized_kernel
 
 .. autofunction:: save_and_reload_temporaries
 
@@ -144,4 +142,3 @@ TODO: Matching instruction tags
 .. automodule:: loopy.match
 
 .. vim: tw=75:spell
-

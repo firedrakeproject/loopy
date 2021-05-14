@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import, print_function
-
 __copyright__ = "Copyright (C) 2019 Andreas Kloeckner"
 
 __license__ = """
@@ -21,9 +19,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
-
-import six
-from six.moves import range
 
 import sys
 import numpy as np
@@ -51,7 +46,7 @@ from pyopencl.tools import pytest_generate_tests_for_pyopencl \
 
 __all__ = [
         "pytest_generate_tests",
-        "cl"  # 'cl.create_some_context'
+        "cl"  # "cl.create_some_context"
         ]
 
 
@@ -66,12 +61,12 @@ class BoundsCheckError(ValueError):
 
 class BoundsCheckingEvaluationMapper(EvaluationMapper):
     def __init__(self, context, lbound, ubound):
-        super(BoundsCheckingEvaluationMapper, self).__init__(context)
+        super().__init__(context)
         self.lbound = lbound
         self.ubound = ubound
 
     def rec(self, expr):
-        result = super(BoundsCheckingEvaluationMapper, self).rec(expr)
+        result = super().rec(expr)
 
         if result > self.ubound:
             raise BoundsCheckError()
@@ -247,9 +242,10 @@ def assert_parse_roundtrip(expr):
     assert expr == parsed_expr
 
 
+@pytest.mark.parametrize("target", [lp.PyOpenCLTarget, lp.ExecutableCTarget])
 @pytest.mark.parametrize("random_seed", [0, 1, 2, 3, 4, 5])
 @pytest.mark.parametrize("expr_type", ["int", "int_nonneg", "real", "complex"])
-def test_fuzz_expression_code_gen(ctx_factory, expr_type, random_seed):
+def test_fuzz_expression_code_gen(ctx_factory, expr_type, random_seed, target):
     from pymbolic import evaluate
 
     def get_numpy_type(x):
@@ -266,9 +262,6 @@ def test_fuzz_expression_code_gen(ctx_factory, expr_type, random_seed):
             raise ValueError("unknown expr_type: %s" % expr_type)
 
     from random import seed
-
-    ctx = ctx_factory()
-    queue = cl.CommandQueue(ctx)
 
     seed(random_seed)
 
@@ -326,18 +319,19 @@ def test_fuzz_expression_code_gen(ctx_factory, expr_type, random_seed):
             shape=()))
         data.extend([
             lp.TemporaryVariable(name, get_numpy_type(val))
-            for name, val in six.iteritems(var_values)
+            for name, val in var_values.items()
             ])
         instructions.extend([
             lp.Assignment(name, get_numpy_type(val)(val))
-            for name, val in six.iteritems(var_values)
+            for name, val in var_values.items()
             ])
         instructions.append(lp.Assignment(var_name, expr))
 
         if expr_type == "int_nonneg":
             var_names.extend(var_values)
 
-    knl = lp.make_kernel("{ : }", instructions, data, seq_dependencies=True)
+    knl = lp.make_kernel("{ : }", instructions, data, seq_dependencies=True,
+            target=target())
 
     import islpy as isl
     knl = lp.assume(knl, isl.BasicSet(
@@ -348,9 +342,17 @@ def test_fuzz_expression_code_gen(ctx_factory, expr_type, random_seed):
 
     knl = lp.set_options(knl, return_dict=True)
     print(knl)
-    evt, lp_values = knl(queue, out_host=True)
 
-    for name, ref_value in six.iteritems(ref_values):
+    if target == lp.PyOpenCLTarget:
+        cl_ctx = ctx_factory()
+        knl = lp.set_options(knl, "write_cl")
+        evt, lp_values = knl(cl.CommandQueue(cl_ctx), out_host=True)
+    elif target == lp.ExecutableCTarget:
+        evt, lp_values = knl()
+    else:
+        raise NotImplementedError("unsupported target")
+
+    for name, ref_value in ref_values.items():
         lp_value = lp_values[name]
         if expr_type in ["real", "complex"]:
             err = abs(ref_value-lp_value)/abs(ref_value)
@@ -365,7 +367,7 @@ def test_fuzz_expression_code_gen(ctx_factory, expr_type, random_seed):
             print(80*"-")
             print(lp.generate_code_v2(knl).device_code())
             print(80*"-")
-            print("WRONG: %s rel error=%g" % (name, err))
+            print(f"WRONG: {name} rel error={err:g}")
             print("reference=%r" % ref_value)
             print("loopy=%r" % lp_value)
             print(80*"-")
@@ -381,8 +383,8 @@ def test_sci_notation_literal(ctx_factory):
     queue = cl.CommandQueue(ctx)
 
     set_kernel = lp.make_kernel(
-         ''' { [i]: 0<=i<12 } ''',
-         ''' out[i] = 1e-12''')
+         """ { [i]: 0<=i<12 } """,
+         """ out[i] = 1e-12""")
 
     set_kernel = lp.set_options(set_kernel, write_cl=True)
 
@@ -396,8 +398,8 @@ def test_indexof(ctx_factory):
     queue = cl.CommandQueue(ctx)
 
     knl = lp.make_kernel(
-         ''' { [i,j]: 0<=i,j<5 } ''',
-         ''' out[i,j] = indexof(out[i,j])''')
+         """ { [i,j]: 0<=i,j<5 } """,
+         """ out[i,j] = indexof(out[i,j])""")
 
     knl = lp.set_options(knl, write_cl=True)
 
@@ -411,13 +413,17 @@ def test_indexof_vec(ctx_factory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
-    if ctx.devices[0].platform.name.startswith("Portable"):
-        # Accurate as of 2015-10-08
-        pytest.skip("POCL miscompiles vector code")
+    if (
+            # Accurate as of 2015-10-08
+            ctx.devices[0].platform.name.startswith("Portable")
+            or
+            # Accurate as of 2019-11-04
+            ctx.devices[0].platform.name.startswith("Intel")):
+        pytest.skip("target ICD miscompiles vector code")
 
     knl = lp.make_kernel(
-         ''' { [i,j,k]: 0<=i,j,k<4 } ''',
-         ''' out[i,j,k] = indexof_vec(out[i,j,k])''')
+         """ { [i,j,k]: 0<=i,j,k<4 } """,
+         """ out[i,j,k] = indexof_vec(out[i,j,k])""")
 
     knl = lp.tag_inames(knl, {"i": "vec"})
     knl = lp.tag_data_axes(knl, "out", "vec,c,c")
@@ -475,13 +481,99 @@ def test_divide_precedence(ctx_factory):
             x[0] = c*(a/b)
             y[0] = c*(a%b)
             """,
-            [lp.ValueArg('a, b, c', np.int32), lp.GlobalArg('x, y', np.int32)])
+            [lp.ValueArg("a, b, c", np.int32), lp.GlobalArg("x, y", np.int32)])
     print(lp.generate_code_v2(knl).device_code())
 
     evt, (x_out, y_out) = knl(queue, c=2, b=2, a=5)
     evt.wait()
     assert x_out.get() == 4
     assert y_out.get() == 2
+
+
+@pytest.mark.parametrize("target", [lp.PyOpenCLTarget, lp.ExecutableCTarget])
+def test_complex_support(ctx_factory, target):
+    knl = lp.make_kernel(
+            "{[i, i1, i2]: 0<=i,i1,i2<10}",
+            """
+            euler1[i]  = exp(3.14159265359j)
+            euler2[i] = (2.7182818284 ** (3.14159265359j))
+            euler1_real[i] = real(euler1[i])
+            euler1_imag[i] = imag(euler1[i])
+            real_times_complex[i] = in1[i]*(in2[i]*1j)
+            real_plus_complex[i] = in1[i] + (in2[i]*1j)
+            abs_complex[i] = abs(real_plus_complex[i])
+            complex_div_complex[i] = (2jf + 7*in1[i])/(32jf + 37*in1[i])
+            complex_div_real[i] = (2jf + 7*in1[i])/in1[i]
+            real_div_complex[i] = in1[i]/(2jf + 7*in1[i])
+            out_sum = sum(i1, 1.0*i1 + i1*1jf)*sum(i2, 1.0*i2 + i2*1jf)
+            conj_out_sum = conj(out_sum)
+            """,
+            target=target(),
+            seq_dependencies=True)
+    knl = lp.set_options(knl, "return_dict")
+
+    n = 10
+
+    in1 = np.random.rand(n)
+    in2 = np.random.rand(n)
+
+    kwargs = {"in1": in1, "in2": in2}
+
+    if target == lp.PyOpenCLTarget:
+        knl = lp.set_options(knl, "write_cl")
+        cl_ctx = ctx_factory()
+        evt, out = knl(cl.CommandQueue(cl_ctx), **kwargs)
+    elif target == lp.ExecutableCTarget:
+        evt, out = knl(**kwargs)
+    else:
+        raise NotImplementedError("unsupported target")
+
+    np.testing.assert_allclose(out["euler1"], -1)
+    np.testing.assert_allclose(out["euler2"], -1)
+    np.testing.assert_allclose(out["euler1_real"], -1)
+    np.testing.assert_allclose(out["euler1_imag"], 0, atol=1e-10)
+    np.testing.assert_allclose(out["real_times_complex"], in1*(in2*1j))
+    np.testing.assert_allclose(out["real_plus_complex"], in1+(in2*1j))
+    np.testing.assert_allclose(out["abs_complex"], np.abs(out["real_plus_complex"]))
+    np.testing.assert_allclose(out["complex_div_complex"], (2j+7*in1)/(32j+37*in1))
+    np.testing.assert_allclose(out["complex_div_real"], (2j + 7*in1)/in1)
+    np.testing.assert_allclose(out["real_div_complex"], in1/(2j + 7*in1))
+    np.testing.assert_allclose(out["out_sum"], (0.5*n*(n-1) + 0.5*n*(n-1)*1j) ** 2)
+    np.testing.assert_allclose(out["conj_out_sum"],
+                               (0.5*n*(n-1) - 0.5*n*(n-1)*1j) ** 2)
+
+
+def test_bool_type_context(ctx_factory):
+    # Checks if a boolean type context is correctly handled in codegen phase.
+    # See https://github.com/inducer/loopy/pull/258
+    ctx = ctx_factory()
+    queue = cl.CommandQueue(ctx)
+
+    knl = lp.make_kernel(
+        "{:}",
+        """
+        k = 8.0 and 7.0
+        """,
+        [
+            lp.GlobalArg("k", dtype=np.bool8, shape=lp.auto),
+        ])
+
+    evt, (out,) = knl(queue)
+    assert out.get() == np.logical_and(7.0, 8.0)
+
+
+def test_np_bool_handling(ctx_factory):
+    import pymbolic.primitives as p
+    from loopy.symbolic import parse
+    ctx = ctx_factory()
+    queue = cl.CommandQueue(ctx)
+
+    knl = lp.make_kernel(
+        "{:}",
+        [lp.Assignment(parse("y"), p.LogicalNot(np.bool_(False)))],
+        [lp.GlobalArg("y", dtype=np.bool_, shape=lp.auto)])
+    evt, (out,) = knl(queue)
+    assert out.get().item() is True
 
 
 if __name__ == "__main__":

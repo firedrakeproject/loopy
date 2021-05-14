@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import
-
 __copyright__ = "Copyright (C) 2016 Andreas Kloeckner"
 
 __license__ = """
@@ -30,11 +28,14 @@ from loopy.target.pyopencl_execution import (  # noqa
 # {{{ compatibility
 
 class CompiledKernel(PyOpenCLKernelExecutor):
-    def __init__(self, context, kernel):
+    """
+    .. automethod:: __call__
+    """
+    def __init__(self, context, kernel, entrypoint):
         from warnings import warn
         warn("CompiledKernel is deprecated. Use LoopKernel.__call__ directly.",
                 DeprecationWarning, stacklevel=2)
 
-        super(CompiledKernel, self).__init__(context, kernel)
+        super().__init__(context, kernel, entrypoint)
 
 # }}}

@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import
-
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
 __license__ = """
@@ -22,19 +20,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import six
-
 from loopy.symbolic import (
-        get_dependencies, SubstitutionMapper,
         RuleAwareIdentityMapper, SubstitutionRuleMappingContext)
 from loopy.diagnostic import LoopyError
-from pymbolic.mapper.substitutor import make_subst_func
+from loopy.transform.iname import remove_any_newly_unused_inames
 
 from pytools import ImmutableRecord
 from pymbolic import var
 
-from loopy.program import iterate_over_kernels_if_given_program
-from loopy.kernel import LoopKernel
+from loopy.translation_unit import (for_each_kernel,
+                                    TranslationUnit)
 from loopy.kernel.function_interface import CallableKernel, ScalarCallable
 
 import logging
@@ -47,7 +42,6 @@ class ExprDescriptor(ImmutableRecord):
 
 # {{{ extract_subst
 
-@iterate_over_kernels_if_given_program
 def extract_subst(kernel, subst_name, template, parameters=()):
     """
     :arg subst_name: The name of the substitution rule to be created.
@@ -59,6 +53,16 @@ def extract_subst(kernel, subst_name, template, parameters=()):
     The template may contain '*' wildcards that will have to match exactly across all
     unifications.
     """
+
+    if isinstance(kernel, TranslationUnit):
+        kernel_names = [i for i, clbl in
+                kernel.callables_table.items() if isinstance(clbl,
+                    CallableKernel)]
+        if len(kernel_names) != 1:
+            raise LoopyError()
+
+        return kernel.with_kernel(extract_subst(kernel[kernel_names[0]],
+            subst_name, template, parameters))
 
     if isinstance(template, str):
         from pymbolic import parse
@@ -84,40 +88,13 @@ def extract_subst(kernel, subst_name, template, parameters=()):
 
     # }}}
 
-    # {{{ deal with iname deps of template that are not independent_inames
-
-    # (We call these 'matching_vars', because they have to match exactly in
-    # every CSE. As above, they might need to be renamed to make them unique
-    # within the kernel.)
-
-    matching_vars = []
-    old_to_new = {}
-
-    for iname in (get_dependencies(template)
-            - set(parameters)
-            - kernel.non_iname_variable_names()):
-        if iname in kernel.all_inames():
-            # need to rename to be unique
-            new_iname = var_name_gen(iname)
-            old_to_new[iname] = var(new_iname)
-            matching_vars.append(new_iname)
-        else:
-            matching_vars.append(iname)
-
-    if old_to_new:
-        template = (
-                SubstitutionMapper(make_subst_func(old_to_new))
-                (template))
-
-    # }}}
-
     # {{{ gather up expressions
 
     expr_descriptors = []
 
     from loopy.symbolic import UnidirectionalUnifier
     unif = UnidirectionalUnifier(
-            lhs_mapping_candidates=set(parameters) | set(matching_vars))
+            lhs_mapping_candidates=set(parameters))
 
     def gather_exprs(expr, mapper):
         urecs = unif(template, expr)
@@ -133,8 +110,8 @@ def extract_subst(kernel, subst_name, template, parameters=()):
                     ExprDescriptor(
                         insn=insn,
                         expr=expr,
-                        unif_var_dict=dict((lhs.name, rhs)
-                            for lhs, rhs in urec.equations)))
+                        unif_var_dict={lhs.name: rhs
+                            for lhs, rhs in urec.equations}))
         else:
             mapper.fallback_mapper(expr)
             # can't nest, don't recurse
@@ -147,7 +124,7 @@ def extract_subst(kernel, subst_name, template, parameters=()):
         dfmapper(insn.assignees)
         dfmapper(insn.expression)
 
-    for sr in six.itervalues(kernel.substitutions):
+    for sr in kernel.substitutions.values():
         dfmapper(sr.expression)
 
     # }}}
@@ -181,8 +158,30 @@ def extract_subst(kernel, subst_name, template, parameters=()):
 
     new_insns = []
 
+    def transform_assignee(expr):
+        # Assignment LHS's cannot be subst rules. Treat them
+        # specially.
+
+        import pymbolic.primitives as prim
+        if isinstance(expr, tuple):
+            return tuple(
+                    transform_assignee(expr_i)
+                    for expr_i in expr)
+
+        elif isinstance(expr, prim.Subscript):
+            return type(expr)(
+                    expr.aggregate,
+                    cbmapper(expr.index))
+
+        elif isinstance(expr, prim.Variable):
+            return expr
+        else:
+            raise ValueError("assignment LHS not understood")
+
     for insn in kernel.instructions:
-        new_insns.append(insn.with_transformed_expressions(cbmapper))
+        new_insns.append(
+                insn.with_transformed_expressions(
+                    cbmapper, assignee_f=transform_assignee))
 
     from loopy.kernel.data import SubstitutionRule
     new_substs = {
@@ -192,7 +191,7 @@ def extract_subst(kernel, subst_name, template, parameters=()):
                 expression=template,
                 )}
 
-    for subst in six.itervalues(kernel.substitutions):
+    for subst in kernel.substitutions.values():
         new_substs[subst.name] = subst.copy(
                 expression=cbmapper(subst.expression))
 
@@ -213,7 +212,7 @@ class AssignmentToSubstChanger(RuleAwareIdentityMapper):
             usage_to_definition, extra_arguments, within):
         self.var_name_gen = rule_mapping_context.make_unique_var_name
 
-        super(AssignmentToSubstChanger, self).__init__(rule_mapping_context)
+        super().__init__(rule_mapping_context)
 
         self.lhs_name = lhs_name
         self.definition_insn_ids = definition_insn_ids
@@ -245,7 +244,7 @@ class AssignmentToSubstChanger(RuleAwareIdentityMapper):
             if result is not None:
                 return result
 
-        return super(AssignmentToSubstChanger, self).map_variable(
+        return super().map_variable(
                 expr, expn_state)
 
     def map_subscript(self, expr, expn_state):
@@ -255,7 +254,7 @@ class AssignmentToSubstChanger(RuleAwareIdentityMapper):
             if result is not None:
                 return result
 
-        return super(AssignmentToSubstChanger, self).map_subscript(
+        return super().map_subscript(
                 expr, expn_state)
 
     def transform_access(self, index, expn_state):
@@ -290,7 +289,8 @@ class AssignmentToSubstChanger(RuleAwareIdentityMapper):
             return var(subst_name)(*index)
 
 
-@iterate_over_kernels_if_given_program
+@for_each_kernel
+@remove_any_newly_unused_inames
 def assignment_to_subst(kernel, lhs_name, extra_arguments=(), within=None,
         force_retain_argument=False):
     """Extract an assignment (to a temporary variable or an argument)
@@ -393,7 +393,7 @@ def assignment_to_subst(kernel, lhs_name, extra_arguments=(), within=None,
     # {{{ create new substitution rules
 
     new_substs = kernel.substitutions.copy()
-    for def_id, subst_name in six.iteritems(tts.definition_insn_id_to_subst_name):
+    for def_id, subst_name in tts.definition_insn_id_to_subst_name.items():
         def_insn = kernel.id_to_insn[def_id]
 
         from loopy.kernel.data import Assignment
@@ -434,7 +434,7 @@ def assignment_to_subst(kernel, lhs_name, extra_arguments=(), within=None,
     new_args = kernel.args
 
     if lhs_name in kernel.temporary_variables:
-        if not any(six.itervalues(tts.saw_unmatched_usage_sites)):
+        if not any(tts.saw_unmatched_usage_sites.values()):
             # All usage sites matched--they're now substitution rules.
             # We can get rid of the variable.
 
@@ -442,7 +442,7 @@ def assignment_to_subst(kernel, lhs_name, extra_arguments=(), within=None,
             del new_temp_vars[lhs_name]
 
     if lhs_name in kernel.arg_dict and not force_retain_argument:
-        if not any(six.itervalues(tts.saw_unmatched_usage_sites)):
+        if not any(tts.saw_unmatched_usage_sites.values()):
             # All usage sites matched--they're now substitution rules.
             # We can get rid of the argument
 
@@ -457,11 +457,10 @@ def assignment_to_subst(kernel, lhs_name, extra_arguments=(), within=None,
     import loopy as lp
     kernel = lp.remove_instructions(
             kernel,
-            set(
+            {
                 insn_id
-                for insn_id, still_used in six.iteritems(
-                    tts.saw_unmatched_usage_sites)
-                if not still_used))
+                for insn_id, still_used in tts.saw_unmatched_usage_sites.items()
+                if not still_used})
 
     return kernel.copy(
             substitutions=new_substs,
@@ -474,7 +473,7 @@ def assignment_to_subst(kernel, lhs_name, extra_arguments=(), within=None,
 
 # {{{ expand_subst
 
-@iterate_over_kernels_if_given_program
+@for_each_kernel
 def expand_subst(kernel, within=None):
     """
     Returns an instance of :class:`loopy.LoopKernel` with the substitutions
@@ -483,7 +482,6 @@ def expand_subst(kernel, within=None):
     :arg within: a stack match as understood by
         :func:`loopy.match.parse_stack_match`.
     """
-    assert isinstance(kernel, LoopKernel)
 
     if not kernel.substitutions:
         return kernel
@@ -506,7 +504,7 @@ def expand_subst(kernel, within=None):
 
 # {{{ find substitution rules by glob patterns
 
-def find_rules_matching(knl, pattern):
+def find_rules_matching(kernel, pattern):
     """
     :pattern: A shell-style glob pattern.
     """
@@ -514,7 +512,7 @@ def find_rules_matching(knl, pattern):
     from loopy.match import re_from_glob
     pattern = re_from_glob(pattern)
 
-    return [r for r in knl.substitutions if pattern.match(r)]
+    return [r for r in kernel.substitutions if pattern.match(r)]
 
 
 def find_one_rule_matching(program, pattern):

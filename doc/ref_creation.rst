@@ -1,6 +1,4 @@
-.. module:: loopy
-.. moduleauthor:: Andreas Kloeckner <inform@tiker.net>
-
+.. currentmodule:: loopy
 .. _creating-kernels:
 
 Reference: Creating Kernels
@@ -29,6 +27,11 @@ To Copy between Data Formats
 ----------------------------
 
 .. autofunction:: make_copy_kernel
+
+Einstein summation convention kernels
+-------------------------------------
+
+.. autofunction:: make_einsum
 
 .. automodule:: loopy.version
 

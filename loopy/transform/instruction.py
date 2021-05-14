@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import
-
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
 __license__ = """
@@ -22,12 +20,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import six  # noqa
-
 from loopy.diagnostic import LoopyError
 from loopy.kernel import LoopKernel
 from loopy.kernel.function_interface import (ScalarCallable, CallableKernel)
-from loopy.program import Program, iterate_over_kernels_if_given_program
+from loopy.translation_unit import (TranslationUnit,
+                                    for_each_kernel)
 
 
 # {{{ find_instructions
@@ -40,7 +37,10 @@ def find_instructions_in_single_kernel(kernel, insn_match):
 
 
 def find_instructions(program, insn_match):
-    assert isinstance(program, Program)
+    if isinstance(program, LoopKernel):
+        return find_instructions_in_single_kernel(program, insn_match)
+
+    assert isinstance(program, TranslationUnit)
     insns = []
     for in_knl_callable in program.callables_table.values():
         if isinstance(in_knl_callable, CallableKernel):
@@ -78,7 +78,7 @@ def map_instructions(kernel, insn_match, f):
 
 # {{{ set_instruction_priority
 
-@iterate_over_kernels_if_given_program
+@for_each_kernel
 def set_instruction_priority(kernel, insn_match, priority):
     """Set the priority of instructions matching *insn_match* to *priority*.
 
@@ -96,7 +96,7 @@ def set_instruction_priority(kernel, insn_match, priority):
 
 # {{{ add_dependency
 
-@iterate_over_kernels_if_given_program
+@for_each_kernel
 def add_dependency(kernel, insn_match, depends_on):
     """Add the instruction dependency *dependency* to the instructions matched
     by *insn_match*.
@@ -146,6 +146,7 @@ def add_dependency(kernel, insn_match, depends_on):
 
 # {{{ remove_instructions
 
+@for_each_kernel
 def remove_instructions(kernel, insn_ids):
     """Return a new kernel with instructions in *insn_ids* removed.
 
@@ -197,19 +198,23 @@ def remove_instructions(kernel, insn_ids):
 # {{{ replace_instruction_ids
 
 def replace_instruction_ids(kernel, replacements):
+    if not replacements:
+        return kernel
+
     new_insns = []
 
-    for insn in kernel.instructions:
+    for i, insn in enumerate(kernel.instructions):
         changed = False
-        new_depends_on = []
+        new_depends_on = list(insn.depends_on)
+        extra_depends_on = []
         new_no_sync_with = []
 
-        for dep in insn.depends_on:
+        for idep, dep in enumerate(insn.depends_on):
             if dep in replacements:
-                new_depends_on.extend(replacements[dep])
+                new_deps = list(replacements[dep])
+                new_depends_on[idep] = new_deps[0]
+                extra_depends_on.extend(new_deps[1:])
                 changed = True
-            else:
-                new_depends_on.append(dep)
 
         for insn_id, scope in insn.no_sync_with:
             if insn_id in replacements:
@@ -221,7 +226,7 @@ def replace_instruction_ids(kernel, replacements):
 
         new_insns.append(
                 insn.copy(
-                    depends_on=frozenset(new_depends_on),
+                    depends_on=frozenset(new_depends_on + extra_depends_on),
                     no_sync_with=frozenset(new_no_sync_with))
                 if changed else insn)
 
@@ -232,16 +237,19 @@ def replace_instruction_ids(kernel, replacements):
 
 # {{{ tag_instructions
 
-@iterate_over_kernels_if_given_program
+@for_each_kernel
 def tag_instructions(kernel, new_tag, within=None):
     from loopy.match import parse_match
     within = parse_match(within)
+
+    from loopy.kernel.creation import _normalize_tags
+    new_tags = _normalize_tags([new_tag])
 
     new_insns = []
     for insn in kernel.instructions:
         if within(kernel, insn):
             new_insns.append(
-                    insn.copy(tags=insn.tags | frozenset([new_tag])))
+                    insn.copy(tags=insn.tags | new_tags))
         else:
             new_insns.append(insn)
 
@@ -252,7 +260,7 @@ def tag_instructions(kernel, new_tag, within=None):
 
 # {{{ add nosync
 
-@iterate_over_kernels_if_given_program
+@for_each_kernel
 def add_nosync(kernel, scope, source, sink, bidirectional=False, force=False,
         empty_ok=False):
     """Add a *no_sync_with* directive between *source* and *sink*.
@@ -352,7 +360,7 @@ def add_nosync(kernel, scope, source, sink, bidirectional=False, force=False,
 
 # {{{ uniquify_instruction_ids
 
-@iterate_over_kernels_if_given_program
+@for_each_kernel
 def uniquify_instruction_ids(kernel):
     """Converts any ids that are :class:`loopy.UniqueName` or *None* into unique
     strings.
@@ -362,9 +370,9 @@ def uniquify_instruction_ids(kernel):
 
     from loopy.kernel.creation import UniqueName
 
-    insn_ids = set(
+    insn_ids = {
             insn.id for insn in kernel.instructions
-            if insn.id is not None and not isinstance(insn.id, UniqueName))
+            if insn.id is not None and not isinstance(insn.id, UniqueName)}
 
     from pytools import UniqueNameGenerator
     insn_id_gen = UniqueNameGenerator(insn_ids)

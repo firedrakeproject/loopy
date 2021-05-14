@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import, print_function
-
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
 __license__ = """
@@ -23,23 +21,20 @@ THE SOFTWARE.
 """
 
 
-import six
-from six.moves import range, zip
 import islpy as isl
 from loopy.symbolic import (get_dependencies,
         RuleAwareIdentityMapper, RuleAwareSubstitutionMapper,
         SubstitutionRuleMappingContext)
 from loopy.diagnostic import LoopyError
 from pymbolic.mapper.substitutor import make_subst_func
+from loopy.translation_unit import TranslationUnit
+from loopy.kernel.function_interface import CallableKernel, ScalarCallable
 import numpy as np
 
 from pymbolic import var
 
 from loopy.transform.array_buffer_map import (ArrayToBufferMap, NoOpArrayToBufferMap,
         AccessDescriptor)
-
-from loopy.program import Program
-from loopy.kernel.function_interface import CallableKernel, ScalarCallable
 
 
 class RuleAccessDescriptor(AccessDescriptor):
@@ -66,7 +61,7 @@ def storage_axis_exprs(storage_axis_sources, args):
 
 class RuleInvocationGatherer(RuleAwareIdentityMapper):
     def __init__(self, rule_mapping_context, kernel, subst_name, subst_tag, within):
-        super(RuleInvocationGatherer, self).__init__(rule_mapping_context)
+        super().__init__(rule_mapping_context)
 
         from loopy.symbolic import SubstitutionRuleExpander
         self.subst_expander = SubstitutionRuleExpander(
@@ -91,7 +86,7 @@ class RuleInvocationGatherer(RuleAwareIdentityMapper):
                 expn_state.stack)
 
         if not process_me:
-            return super(RuleInvocationGatherer, self).map_substitution(
+            return super().map_substitution(
                     name, tag, arguments, expn_state)
 
         rule = self.rule_mapping_context.old_subst_rules[name]
@@ -99,7 +94,7 @@ class RuleInvocationGatherer(RuleAwareIdentityMapper):
                     name, rule.arguments, arguments, expn_state.arg_context)
 
         arg_deps = set()
-        for arg_val in six.itervalues(arg_context):
+        for arg_val in arg_context.values():
             arg_deps = (arg_deps
                     | get_dependencies(self.subst_expander(arg_val)))
 
@@ -116,7 +111,7 @@ class RuleInvocationGatherer(RuleAwareIdentityMapper):
                         ", ".join(arg_deps - self.kernel.all_inames()),
                         ))
 
-            return super(RuleInvocationGatherer, self).map_substitution(
+            return super().map_substitution(
                     name, tag, arguments, expn_state)
 
         args = [arg_context[arg_name] for arg_name in rule.arguments]
@@ -141,7 +136,7 @@ class RuleInvocationReplacer(RuleAwareIdentityMapper):
             non1_storage_axis_names,
             temporary_name, compute_insn_id, compute_dep_id,
             compute_read_variables):
-        super(RuleInvocationReplacer, self).__init__(rule_mapping_context)
+        super().__init__(rule_mapping_context)
 
         self.subst_name = subst_name
         self.subst_tag = subst_tag
@@ -169,7 +164,7 @@ class RuleInvocationReplacer(RuleAwareIdentityMapper):
                     expn_state.instruction,
                     expn_state.stack)
                 and (self.subst_tag is None or self.subst_tag == tag)):
-            return super(RuleInvocationReplacer, self).map_substitution(
+            return super().map_substitution(
                     name, tag, arguments, expn_state)
 
         # {{{ check if in footprint
@@ -184,7 +179,7 @@ class RuleInvocationReplacer(RuleAwareIdentityMapper):
                     self.storage_axis_sources, args))
 
         if not self.array_base_map.is_access_descriptor_in_footprint(accdesc):
-            return super(RuleInvocationReplacer, self).map_substitution(
+            return super().map_substitution(
                     name, tag, arguments, expn_state)
 
         # }}}
@@ -227,12 +222,13 @@ class RuleInvocationReplacer(RuleAwareIdentityMapper):
     def map_kernel(self, kernel):
         new_insns = []
 
-        excluded_insn_ids = set([self.compute_insn_id, self.compute_dep_id])
+        excluded_insn_ids = {self.compute_insn_id, self.compute_dep_id}
 
         for insn in kernel.instructions:
             self.replaced_something = False
 
-            insn = insn.with_transformed_expressions(self, kernel, insn)
+            insn = insn.with_transformed_expressions(
+                    lambda expr: self(expr, kernel, insn))
 
             if self.replaced_something:
                 insn = insn.copy(
@@ -257,7 +253,7 @@ class RuleInvocationReplacer(RuleAwareIdentityMapper):
 # }}}
 
 
-class _not_provided(object):  # noqa: N801
+class _not_provided:  # noqa: N801
     pass
 
 
@@ -358,6 +354,18 @@ def precompute_for_single_kernel(kernel, callables_table, subst_use,
     Trivial storage axes (i.e. axes of length 1 with respect to the sweep) are
     eliminated.
     """
+    if isinstance(kernel, TranslationUnit):
+        kernel_names = [i for i, clbl in
+                kernel.callables_table.items() if isinstance(clbl,
+                    CallableKernel)]
+        if len(kernel_names) != 1:
+            raise LoopyError()
+
+        return kernel.with_kernel(precompute(kernel[kernel_names[0]],
+            subst_use, sweep_inames, within, storage_axes, temporary_name,
+            precompute_inames, precompute_outer_inames, storage_axis_to_tag,
+            default_tag, dtype, fetch_bounding_box, temporary_address_space,
+            compute_insn_id, kernel.callables_table, **kwargs))
 
     # {{{ unify temporary_address_space / temporary_scope
 
@@ -618,7 +626,7 @@ def precompute_for_single_kernel(kernel, callables_table, subst_use,
             name = old_name = subst.arguments[saxis]
         else:
             old_name = saxis
-            name = "%s_%s" % (c_subst_name, old_name)
+            name = f"{c_subst_name}_{old_name}"
 
         if (precompute_inames is not None
                 and i < len(precompute_inames)
@@ -959,12 +967,8 @@ def precompute_for_single_kernel(kernel, callables_table, subst_use,
     # {{{ set up temp variable
 
     import loopy as lp
-    if dtype is None:
-        dtype = lp.auto
-    else:
+    if dtype is not None:
         dtype = np.dtype(dtype)
-
-    import loopy as lp
 
     if temporary_address_space is None:
         temporary_address_space = lp.auto
@@ -1053,27 +1057,21 @@ def precompute_for_single_kernel(kernel, callables_table, subst_use,
 
 
 def precompute(program, *args, **kwargs):
-    assert isinstance(program, Program)
+    assert isinstance(program, TranslationUnit)
+    new_callables = {}
 
-    new_resolved_functions = {}
-    for func_id, in_knl_callable in program.callables_table.items():
-        if isinstance(in_knl_callable, CallableKernel):
-            new_subkernel = precompute_for_single_kernel(
-                    in_knl_callable.subkernel, program.callables_table,
-                    *args, **kwargs)
-            in_knl_callable = in_knl_callable.copy(
-                    subkernel=new_subkernel)
-
-        elif isinstance(in_knl_callable, ScalarCallable):
+    for func_id, clbl in program.callables_table.items():
+        if isinstance(clbl, CallableKernel):
+            knl = precompute_for_single_kernel(clbl.subkernel,
+                    program.callables_table, *args, **kwargs)
+            clbl = clbl.copy(subkernel=knl)
+        elif isinstance(clbl, ScalarCallable):
             pass
         else:
-            raise NotImplementedError("Unknown type of callable %s." % (
-                type(in_knl_callable).__name__))
+            raise NotImplementedError()
 
-        new_resolved_functions[func_id] = in_knl_callable
+        new_callables[func_id] = clbl
 
-    new_callables_table = program.callables_table.copy(
-            resolved_functions=new_resolved_functions)
-    return program.copy(callables_table=new_callables_table)
+    return program.copy(callables_table=new_callables)
 
 # vim: foldmethod=marker

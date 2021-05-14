@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import
-
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
 __license__ = """
@@ -23,12 +21,11 @@ THE SOFTWARE.
 """
 
 
-import six
 from loopy.symbolic import (RuleAwareSubstitutionMapper,
         SubstitutionRuleMappingContext)
 import islpy as isl
 
-from loopy.program import iterate_over_kernels_if_given_program
+from loopy.translation_unit import for_each_kernel
 from loopy.kernel import LoopKernel
 
 __doc__ = """
@@ -43,7 +40,7 @@ __doc__ = """
 
 # {{{ assume
 
-@iterate_over_kernels_if_given_program
+@for_each_kernel
 def assume(kernel, assumptions):
     """Include an assumption about :ref:`domain-parameters` in the kernel, e.g.
     `n mod 4 = 0`.
@@ -71,7 +68,7 @@ def assume(kernel, assumptions):
 
 # {{{ fix_parameter
 
-def _fix_parameter(kernel, name, value):
+def _fix_parameter(kernel, name, value, remove_argument, within=None):
     def process_set(s):
         var_dict = s.get_var_dict()
 
@@ -107,8 +104,7 @@ def _fix_parameter(kernel, name, value):
     from loopy.kernel.array import ArrayBase
     new_args = []
     for arg in kernel.args:
-        if arg.name == name:
-            # remove from argument list
+        if arg.name == name and remove_argument:
             continue
 
         if not isinstance(arg, ArrayBase):
@@ -117,11 +113,11 @@ def _fix_parameter(kernel, name, value):
             new_args.append(arg.map_exprs(map_expr))
 
     new_temp_vars = {}
-    for tv in six.itervalues(kernel.temporary_variables):
+    for tv in kernel.temporary_variables.values():
         new_temp_vars[tv.name] = tv.map_exprs(map_expr)
 
     from loopy.match import parse_stack_match
-    within = parse_stack_match(None)
+    within = parse_stack_match(within)
 
     rule_mapping_context = SubstitutionRuleMappingContext(
             kernel.substitutions, kernel.get_var_name_generator())
@@ -129,7 +125,7 @@ def _fix_parameter(kernel, name, value):
             rule_mapping_context, subst_func, within=within)
     return (
             rule_mapping_context.finish_kernel(
-                esubst_map.map_kernel(kernel))
+                esubst_map.map_kernel(kernel, within=within))
             .copy(
                 domains=new_domains,
                 args=new_args,
@@ -138,7 +134,7 @@ def _fix_parameter(kernel, name, value):
                 ))
 
 
-@iterate_over_kernels_if_given_program
+@for_each_kernel
 def fix_parameters(kernel, **value_dict):
     """Fix the values of the arguments to specific constants.
 
@@ -148,8 +144,16 @@ def fix_parameters(kernel, **value_dict):
     """
     assert isinstance(kernel, LoopKernel)
 
-    for name, value in six.iteritems(value_dict):
-        kernel = _fix_parameter(kernel, name, value)
+    # FIXME: Parameter / argument terminology?
+
+    # FIXME: Is _remove the right approach? (I'm not sure it is.) Because of
+    # the potential namespace conflict. If yes, document. If no, fix.
+
+    remove_arg = value_dict.pop("_remove", True)
+    within = value_dict.pop("within", None)
+
+    for name, value in value_dict.items():
+        kernel = _fix_parameter(kernel, name, value, remove_arg, within)
 
     return kernel
 

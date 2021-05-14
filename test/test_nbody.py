@@ -1,5 +1,3 @@
-from __future__ import division
-
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
 __license__ = """
@@ -47,8 +45,8 @@ def test_nbody(ctx_factory):
             "[N] -> {[i,j,k]: 0<=i,j<N and 0<=k<3 }",
             [
                 "axdist(k) := x[i,k]-x[j,k]",
-                "invdist := rsqrt(sum_float32(k, axdist(k)**2))",
-                "pot[i] = sum_float32(j, if(i != j, invdist, 0))",
+                "invdist := rsqrt(sum(k, axdist(k)**2))",
+                "pot[i] = sum(j, if(i != j, invdist, 0))",
             ], [
                 lp.GlobalArg("x", dtype, shape="N,3", order="C"),
                 lp.GlobalArg("pot", dtype, shape="N", order="C"),
@@ -77,7 +75,8 @@ def test_nbody(ctx_factory):
                 outer_tag="g.0", inner_tag="l.0")
         knl = lp.split_iname(knl, "j", 256)
         knl = lp.add_prefetch(knl, "x[j,k]", ["j_inner", "k"],
-                ["x_fetch_j", "x_fetch_k"], default_tag=None)
+                ["x_fetch_j", "x_fetch_k"],
+                fetch_outer_inames="i_outer, j_outer", default_tag=None)
         knl = lp.tag_inames(knl, dict(x_fetch_k="unr", x_fetch_j="l.0"))
         knl = lp.add_prefetch(knl, "x[i,k]", ["k"], default_tag=None)
         knl = lp.prioritize_loops(knl, ["j_outer", "j_inner"])

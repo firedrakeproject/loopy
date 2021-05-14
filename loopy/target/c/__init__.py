@@ -1,6 +1,5 @@
 """Plain C target and base for other C-family languages."""
 
-from __future__ import division, absolute_import
 
 __copyright__ = "Copyright (C) 2015 Andreas Kloeckner"
 
@@ -24,8 +23,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import six
-
 import numpy as np  # noqa
 from loopy.target import TargetBase, ASTBuilderBase, DummyHostASTBuilder
 from loopy.diagnostic import LoopyError, LoopyTypeError
@@ -37,12 +34,25 @@ from loopy.types import NumpyType
 from loopy.kernel.function_interface import ScalarCallable
 import pymbolic.primitives as p
 
+from loopy.tools import remove_common_indentation
+import re
+
 from pytools import memoize_method
+
+__doc__ = """
+.. currentmodule loopy.target.c
+
+.. autoclass:: POD
+
+.. autoclass:: ScopingBlock
+
+.. automodule:: loopy.target.c.codegen.expression
+"""
 
 
 # {{{ dtype registry wrapper
 
-class DTypeRegistryWrapper(object):
+class DTypeRegistryWrapper:
     def __init__(self, wrapped_registry):
         self.wrapped_registry = wrapped_registry
 
@@ -80,14 +90,14 @@ class DTypeRegistryWrapper(object):
 # {{{ preamble generator
 
 def c99_preamble_generator(preamble_info):
-    from loopy.types import to_loopy_type
     if any(dtype.is_integral() for dtype in preamble_info.seen_dtypes):
-        yield("00_stdint", "#include <stdint.h>")
-    if any(dtype == to_loopy_type(np.dtype("bool"))
-           for dtype in preamble_info.seen_dtypes):
-        yield("00_stdbool", "#include <stdbool.h>")
+        yield("10_stdint", "#include <stdint.h>")
+    if any(dtype.numpy_dtype == np.dtype("bool")
+           for dtype in preamble_info.seen_dtypes
+           if isinstance(dtype, NumpyType)):
+        yield("10_stdbool", "#include <stdbool.h>")
     if any(dtype.is_complex() for dtype in preamble_info.seen_dtypes):
-        yield("00_complex", "#include <complex.h>")
+        yield("10_complex", "#include <complex.h>")
 
 
 def _preamble_generator(preamble_info):
@@ -108,7 +118,7 @@ def _preamble_generator(preamble_info):
     function_defs = {
             "loopy_floor_div": r"""
             #define LOOPY_DEFINE_FLOOR_DIV(SUFFIX, TYPE) \
-                static inline TYPE loopy_floor_div_##SUFFIX(TYPE a, TYPE b) \
+                inline TYPE loopy_floor_div_##SUFFIX(TYPE a, TYPE b) \
                 { \
                     if ((a<0) != (b<0)) \
                         a = a - (b + (b<0) - (b>=0)); \
@@ -120,7 +130,7 @@ def _preamble_generator(preamble_info):
 
             "loopy_floor_div_pos_b": r"""
             #define LOOPY_DEFINE_FLOOR_DIV_POS_B(SUFFIX, TYPE) \
-                static inline TYPE loopy_floor_div_pos_b_##SUFFIX(TYPE a, TYPE b) \
+                inline TYPE loopy_floor_div_pos_b_##SUFFIX(TYPE a, TYPE b) \
                 { \
                     if (a<0) \
                         a = a - (b-1); \
@@ -132,7 +142,7 @@ def _preamble_generator(preamble_info):
 
             "loopy_mod": r"""
             #define LOOPY_DEFINE_MOD(SUFFIX, TYPE) \
-                static inline TYPE loopy_mod_##SUFFIX(TYPE a, TYPE b) \
+                inline TYPE loopy_mod_##SUFFIX(TYPE a, TYPE b) \
                 { \
                     TYPE result = a%b; \
                     if (result < 0 && b > 0) \
@@ -147,7 +157,7 @@ def _preamble_generator(preamble_info):
 
             "loopy_mod_pos_b": r"""
             #define LOOPY_DEFINE_MOD_POS_B(SUFFIX, TYPE) \
-                static inline TYPE loopy_mod_pos_b_##SUFFIX(TYPE a, TYPE b) \
+                inline TYPE loopy_mod_pos_b_##SUFFIX(TYPE a, TYPE b) \
                 { \
                     TYPE result = a%b; \
                     if (result < 0) \
@@ -159,14 +169,54 @@ def _preamble_generator(preamble_info):
             """,
             }
 
-    c_funcs = set(func.c_name for func in preamble_info.seen_functions)
+    c_funcs = {func.c_name for func in preamble_info.seen_functions}
 
-    for func_name, func_body in six.iteritems(function_defs):
+    for func_name, func_body in function_defs.items():
         if any((func_name + "_" + tpname) in c_funcs
                 for tpname in integer_type_names):
             yield def_integer_types_macro
             yield ("04_%s" % func_name, func_body)
             yield undef_integer_types_macro
+
+    for func in preamble_info.seen_functions:
+        if func.name == "int_pow":
+            base_ctype = preamble_info.kernel.target.dtype_to_typename(
+                    func.arg_dtypes[0])
+            exp_ctype = preamble_info.kernel.target.dtype_to_typename(
+                    func.arg_dtypes[1])
+            res_ctype = preamble_info.kernel.target.dtype_to_typename(
+                    func.result_dtypes[0])
+
+            if func.arg_dtypes[1].numpy_dtype.kind == "u":
+                signed_exponent_preamble = ""
+            else:
+                signed_exponent_preamble = "\n" + remove_common_indentation(
+                        """
+                        if (n < 0) {
+                          x = 1.0/x;
+                          n =  -n;
+                        }""")
+
+            yield(f"07_{func.c_name}", f"""
+            inline {res_ctype} {func.c_name}({base_ctype} x, {exp_ctype} n) {{
+              if (n == 0)
+                return 1;
+              {re.sub("^", 14*" ", signed_exponent_preamble, flags=re.M)}
+
+              {res_ctype} y = 1;
+
+              while (n > 1) {{
+                if (n % 2) {{
+                  y = x * y;
+                  x = x * x;
+                }}
+                else
+                  x = x * x;
+                n = n / 2;
+              }}
+
+              return x*y;
+            }}""")
 
 # }}}
 
@@ -210,7 +260,7 @@ class POD(Declarator):
 
 class ScopingBlock(Block):
     """A block that is mandatory for scoping and may not be simplified away
-    by :func:`loopy.codegen.results.merge_codegen_results`.
+    by :func:`loopy.codegen.result.merge_codegen_results`.
     """
 
 
@@ -315,7 +365,7 @@ class ASTSubscriptCollector(CASTIdentityMapper):
 
 # {{{ lazy expression generation
 
-class CExpression(object):
+class CExpression:
     def __init__(self, to_code_mapper, expr):
         self.to_code_mapper = to_code_mapper
         self.expr = expr
@@ -337,7 +387,7 @@ class CFamilyTarget(TargetBase):
 
     def __init__(self, fortran_abi=False):
         self.fortran_abi = fortran_abi
-        super(CFamilyTarget, self).__init__()
+        super().__init__()
 
     def split_kernel_at_global_barriers(self):
         return False
@@ -374,10 +424,10 @@ class CFamilyTarget(TargetBase):
         return self.get_dtype_registry().dtype_to_ctype(dtype)
 
     def get_kernel_executor_cache_key(self, *args, **kwargs):
-        return None  # TODO: ???
+        raise NotImplementedError
 
     def get_kernel_executor(self, knl, *args, **kwargs):
-        raise NotImplementedError()
+        raise NotImplementedError
 
     # }}}
 
@@ -400,6 +450,10 @@ def c_symbol_mangler(kernel, name):
     # float NAN as defined in C99 standard
     if name == "NAN":
         return NumpyType(np.dtype(np.float32)), name
+
+    if name in ["INT_MAX", "INT_MIN"]:
+        return NumpyType(np.dtype(np.int32)), name
+
     return None
 
 # }}}
@@ -413,47 +467,27 @@ class CMathCallable(ScalarCallable):
     C-Target.
     """
 
-    _real_map = {
-        np.dtype(np.complex64): np.dtype(np.float32),
-        np.dtype(np.complex128): np.dtype(np.float64),
-    }
-    if hasattr(np, "complex256"):
-        _real_map[np.dtype(np.complex256)] = np.dtype(np.float128)
-
-    def generate_preambles(self, target):
-        if self.name_in_target.startswith("loopy_" + self.name):
-            template = {
-                "min": r"""
-                        static inline {TYPE} {NAME}({TYPE} a, {TYPE} b)
-                        {{ return a < b ? a : b; }}
-                """,
-                "max": r"""
-                        static inline {TYPE} {NAME}({TYPE} a, {TYPE} b)
-                        {{ return a > b ? a : b; }}
-                """,
-                "abs": r"""
-                        static inline {TYPE} {NAME}({TYPE} a)
-                        {{ return a < 0 ? -a : a; }}
-                """
-            }[self.name]
-            typ = target.dtype_to_typename(self.arg_id_to_dtype[-1])
-            yield ("06_def_" + self.name,
-                   template.format(TYPE=typ, NAME=self.name_in_target))
-
-    def with_types(self, arg_id_to_dtype, caller_kernel, callables_table):
+    def with_types(self, arg_id_to_dtype, callables_table):
         name = self.name
 
-        if name in ["min", "max"]:
-            name = "f" + name
+        # {{{ (abs|max|min) -> (fabs|fmax|fmin)
+
+        if name in ["abs", "min", "max"]:
+            dtype = np.find_common_type(
+                [], [dtype.numpy_dtype for dtype in arg_id_to_dtype.values()])
+            if dtype.kind == "f":
+                name = "f" + name
+
+        # }}}
 
         # unary functions
-        if name in ["abs", "acos", "asin", "atan", "cos", "cosh", "sin", "sinh",
+        if name in ["fabs", "acos", "asin", "atan", "cos", "cosh", "sin", "sinh",
                     "tan", "tanh", "exp", "log", "log10", "sqrt", "ceil", "floor",
-                    "erf", "erfc", "real", "imag", "conj"]:
+                    "erf", "erfc", "abs", "real", "imag", "conj"]:
 
             for id in arg_id_to_dtype:
                 if not -1 <= id <= 0:
-                    raise LoopyError("%s can take only one argument." % name)
+                    raise LoopyError(f"'{name}' can take only one argument.")
 
             if 0 not in arg_id_to_dtype or arg_id_to_dtype[0] is None:
                 # the types provided aren't mature enough to specialize the
@@ -462,60 +496,40 @@ class CMathCallable(ScalarCallable):
                         self.copy(arg_id_to_dtype=arg_id_to_dtype),
                         callables_table)
 
-            ltype = arg_id_to_dtype[0]
-            dtype = ltype.numpy_dtype
+            dtype = arg_id_to_dtype[0].numpy_dtype
+            real_dtype = np.empty(0, dtype=dtype).real.dtype
 
-            if dtype.kind in ('u', 'i'):
-                if name == "abs":
-                    name = "loopy_abs_" + caller_kernel.target.dtype_to_typename(ltype)
-                    return (
-                        self.copy(name_in_target="loopy_abs",
-                                  arg_id_to_dtype={0: ltype, -1: ltype}),
-                        callables_table)
+            if dtype.kind in ("u", "i"):
                 # ints and unsigned casted to float32
                 dtype = np.float32
 
-            if name in ["real", "imag"]:
-                name = "c" + name  # No float equivalents but type promotion applies.
-            elif name in ["conj"]:
-                pass            # Ditto
-            elif dtype.kind == "f":
-                if name == "abs":
-                    name = "f" + name
-            elif dtype.kind == "c" and name in ["abs", "acos", "asin", "atan", "cos",
-                                                "cosh", "sin", "sinh", "tan", "tanh",
-                                                "exp", "log", "sqrt"]:
-                name = "c" + name
+            # for CUDA, C Targets the name must be modified
+            if real_dtype == np.float64:
+                pass  # fabs
+            elif real_dtype == np.float32:
+                name = name + "f"  # fabsf
+            elif (hasattr(np, "float128")
+                    and real_dtype == np.float128):  # pylint:disable=no-member
+                name = name + "l"  # fabsl
             else:
-                raise LoopyTypeError("%s does not support type %s" % (name, dtype))
+                raise LoopyTypeError("{} does not support type {}".format(name,
+                    dtype))
 
-            from loopy.target.opencl import OpenCLTarget
-            if not isinstance(caller_kernel.target, OpenCLTarget):
-                # for CUDA, C Targets the name must be modified
-                if dtype in [np.float64, np.complex128]:
-                    pass  # fabs
-                elif dtype in [np.float32, np.complex64]:
-                    name = name + "f"  # fminf
-                elif ((hasattr(np, "float128") and dtype == np.float128) or
-                      (hasattr(np, "complex256") and dtype == np.complex256)):  # pylint:disable=no-member
-                    name = name + "l"  # fminl
-                else:
-                    raise LoopyTypeError("%s does not support type %s" % (name,
-                        dtype))
+            if name in ["abs", "real", "imag"]:
+                dtype = real_dtype
 
-            if self.name in ["abs", "real", "float"] and dtype.kind == "c":
-                out_dtype = self._real_map[dtype]
-            else:
-                out_dtype = dtype
+            if dtype.kind == "c" or name in ["real", "imag", "abs"]:
+                if name != "conj":
+                    name = "c" + name
 
             return (
                     self.copy(name_in_target=name,
                         arg_id_to_dtype={0: NumpyType(dtype), -1:
-                            NumpyType(out_dtype)}),
+                            NumpyType(dtype)}),
                     callables_table)
 
         # binary functions
-        if name in ["fmax", "fmin", "pow", "atan2"]:
+        elif name in ["fmax", "fmin", "pow", "atan2", "copysign"]:
 
             for id in arg_id_to_dtype:
                 if not -1 <= id <= 1:
@@ -532,55 +546,108 @@ class CMathCallable(ScalarCallable):
             dtype = np.find_common_type(
                 [], [dtype.numpy_dtype for id, dtype in arg_id_to_dtype.items()
                      if id >= 0])
+            real_dtype = np.empty(0, dtype=dtype).real.dtype
 
-            if dtype.kind == "c":
-                if name == "pow":
-                    name = "c" + name
-                else:
-                    raise LoopyTypeError(
-                        "%s does not support complex numbers" % name)
-            if dtype.kind in {'u', 'i'} and name in {"fmax", "fmin"}:
-                ltype = NumpyType(dtype)
-                name = "loopy_" + name[1:] + "_" + caller_kernel.target.dtype_to_typename(ltype)
-            else:
-                from loopy.target.opencl import OpenCLTarget
-                if not isinstance(caller_kernel.target, OpenCLTarget):
-                    # for CUDA, C Targets the name must be modified
-                    if dtype in [np.float64, np.complex128]:
-                        pass  # fabs
-                    elif dtype in [np.float32, np.complex64]:
-                        name = name + "f"  # fminf
-                    elif ((hasattr(np, "float128") and dtype == np.float128) or
-                          (hasattr(np, "complex256") and dtype == np.complex256)):  # pylint:disable=no-member
-                        name = name + "l"  # fminl
-                    else:
-                        raise LoopyTypeError("%s does not support type %s"
-                                             % (name, dtype))
+            if name in ["fmax", "fmin", "copysign"] and dtype.kind == "c":
+                raise LoopyTypeError(f"{name} does not support complex numbers")
+
+            elif real_dtype.kind in "fc":
+                if real_dtype == np.float64:
+                    pass  # fmin
+                elif real_dtype == np.float32:
+                    name = name + "f"  # fminf
+                elif (hasattr(np, "float128")
+                        and real_dtype == np.float128):  # pylint:disable=no-member
+                    name = name + "l"  # fminl
                 else:
                     raise LoopyTypeError("%s does not support type %s"
                                          % (name, dtype))
+            if dtype.kind == "c":
+                name = "c" + name  # cpow
             dtype = NumpyType(dtype)
             return (
                     self.copy(name_in_target=name,
                         arg_id_to_dtype={-1: dtype, 0: dtype, 1: dtype}),
                     callables_table)
+        elif name in ["max", "min"]:
 
-        return (
-                self.copy(name_in_target=name, arg_id_to_dtype=arg_id_to_dtype),
-                callables_table)
+            for id in arg_id_to_dtype:
+                if not -1 <= id <= 1:
+                    raise LoopyError("%s can take only two arguments." % name)
+
+            if 0 not in arg_id_to_dtype or 1 not in arg_id_to_dtype or (
+                    arg_id_to_dtype[0] is None or arg_id_to_dtype[1] is None):
+                # the types provided aren't resolved enough to specialize the
+                # callable
+                return (
+                        self.copy(arg_id_to_dtype=arg_id_to_dtype),
+                        callables_table)
+
+            dtype = np.find_common_type(
+                [], [dtype.numpy_dtype for id, dtype in arg_id_to_dtype.items()
+                     if id >= 0])
+            if dtype.kind not in "iu":
+                # only support integers for now to avoid having to deal with NaNs
+                raise LoopyError(f"{name} does not support '{dtype}' arguments.")
+
+            return (
+                    self.copy(name_in_target=f"lpy_{name}_{dtype.name}",
+                              arg_id_to_dtype={-1: NumpyType(dtype),
+                                               0: NumpyType(dtype),
+                                               1: NumpyType(dtype)}),
+                    callables_table)
+        elif name == "isnan":
+            for id in arg_id_to_dtype:
+                if not -1 <= id <= 0:
+                    raise LoopyError(f"'{name}' can take only one argument.")
+
+            if 0 not in arg_id_to_dtype or arg_id_to_dtype[0] is None:
+                # the types provided aren't mature enough to specialize the
+                # callable
+                return (
+                        self.copy(arg_id_to_dtype=arg_id_to_dtype),
+                        callables_table)
+
+            dtype = arg_id_to_dtype[0].numpy_dtype
+            return (
+                    self.copy(
+                        name_in_target=name,
+                        arg_id_to_dtype={
+                            0: NumpyType(dtype),
+                            -1: NumpyType(np.int32)}),
+                    callables_table)
+
+    def generate_preambles(self, target):
+        if self.name_in_target.startswith("lpy_max"):
+            dtype = self.arg_id_to_dtype[-1]
+            ctype = target.dtype_to_typename(dtype)
+
+            yield ("40_lpy_max", f"""
+            static inline {ctype} {self.name_in_target}({ctype} a, {ctype} b) {{
+              return (a > b ? a : b);
+            }}""")
+
+        if self.name_in_target.startswith("lpy_min"):
+            dtype = self.arg_id_to_dtype[-1]
+            ctype = target.dtype_to_typename(dtype)
+            yield ("40_lpy_min", f"""
+            static inline {ctype} {self.name_in_target}({ctype} a, {ctype} b) {{
+              return (a < b ? a : b);
+            }}""")
 
 
-def scope_c_math_functions(target, identifier):
+def get_c_callables():
     """
     Returns an instance of :class:`InKernelCallable` if the function
     represented by :arg:`identifier` is known in C, otherwise returns *None*.
     """
-    if identifier in ["abs", "acos", "asin", "atan", "cos", "cosh", "sin",
-                      "sinh", "pow", "atan2", "tanh", "exp", "log", "log10",
-                      "sqrt", "ceil", "floor", "max", "min", "fmax", "fmin",
-                      "tan", "erf", "erfc", "real", "imag", "conj"]:
-        return CMathCallable(name=identifier)
-    return None
+    cmath_ids = ["abs", "acos", "asin", "atan", "cos", "cosh", "sin",
+                 "sinh", "pow", "atan2", "tanh", "exp", "log", "log10",
+                 "sqrt", "ceil", "floor", "max", "min", "fmax", "fmin",
+                 "fabs", "tan", "erf", "erfc", "isnan", "real", "imag",
+                 "conj"]
+
+    return {id_: CMathCallable(id_) for id_ in cmath_ids}
 
 # }}}
 
@@ -590,20 +657,21 @@ class CFamilyASTBuilder(ASTBuilderBase):
 
     def symbol_manglers(self):
         return (
-                super(CFamilyASTBuilder, self).symbol_manglers() + [
+                super().symbol_manglers() + [
                     c_symbol_mangler
                     ])
 
     def preamble_generators(self):
         return (
-                super(CFamilyASTBuilder, self).preamble_generators() + [
+                super().preamble_generators() + [
                     _preamble_generator,
                     ])
 
-    def function_id_in_knl_callable_mapper(self):
-        return (
-                super(CFamilyASTBuilder, self).function_id_in_knl_callable_mapper()
-                + [scope_c_math_functions])
+    @property
+    def known_callables(self):
+        callables = super().known_callables
+        callables.update(get_c_callables())
+        return callables
 
     # }}}
 
@@ -636,7 +704,7 @@ class CFamilyASTBuilder(ASTBuilderBase):
                 break
         if is_first_dev_prog:
             for tv in sorted(
-                    six.itervalues(kernel.temporary_variables),
+                    kernel.temporary_variables.values(),
                     key=lambda tv: tv.name):
 
                 if tv.address_space == AddressSpace.GLOBAL and (
@@ -691,7 +759,7 @@ class CFamilyASTBuilder(ASTBuilderBase):
         if self.target.fortran_abi:
             name += "_"
 
-        if codegen_state.kernel.is_called_from_host:
+        if codegen_state.is_entrypoint:
             name = Value("void", name)
         else:
             name = Value("static void", name)
@@ -730,7 +798,7 @@ class CFamilyASTBuilder(ASTBuilderBase):
                 | temporaries_written_in_subkernel(kernel, subkernel))
 
         for tv in sorted(
-                six.itervalues(kernel.temporary_variables),
+                kernel.temporary_variables.values(),
                 key=lambda tv: tv.name):
             decl_info = tv.decl_info(self.target, index_dtype=kernel.index_dtype)
 
@@ -793,7 +861,7 @@ class CFamilyASTBuilder(ASTBuilderBase):
                     cast_tp, cast_d = cast_decl.get_decl_pair()
                     temp_var_decl = Initializer(
                             temp_var_decl,
-                            "(%s %s) (%s + %s)" % (
+                            "({} {}) ({} + {})".format(
                                 " ".join(cast_tp), cast_d,
                                 tv.base_storage,
                                 offset))
@@ -807,7 +875,7 @@ class CFamilyASTBuilder(ASTBuilderBase):
 
         ecm = self.get_expression_to_code_mapper(codegen_state)
 
-        for bs_name, bs_sizes in sorted(six.iteritems(base_storage_sizes)):
+        for bs_name, bs_sizes in sorted(base_storage_sizes.items()):
             bs_var_decl = Value("char", bs_name)
             from pytools import single_valued
             bs_var_decl = self.wrap_temporary_decl(
@@ -847,6 +915,11 @@ class CFamilyASTBuilder(ASTBuilderBase):
     # }}}
 
     # {{{ code generation guts
+
+    @property
+    def ast_module(self):
+        import cgen
+        return cgen
 
     def get_expression_to_code_mapper(self, codegen_state):
         return self.get_expression_to_c_expression_mapper(codegen_state)
@@ -1016,9 +1089,11 @@ class CFamilyASTBuilder(ASTBuilderBase):
         in_knl_callable = codegen_state.callables_table[func_id]
 
         if isinstance(in_knl_callable, ScalarCallable) and (
-                in_knl_callable.name_in_target == 'loopy_make_tuple'):
+                in_knl_callable.name_in_target == "loopy_make_tuple"):
             return self.emit_tuple_assignment(codegen_state, insn)
 
+        # takes "is_returned" to infer whether insn.assignees[0] is a part of
+        # LHS.
         in_knl_callable_as_call, is_returned = in_knl_callable.emit_call_insn(
                 insn=insn,
                 target=self.target,
@@ -1034,7 +1109,7 @@ class CFamilyASTBuilder(ASTBuilderBase):
             from cgen import ExpressionStatement
             return ExpressionStatement(
                     CExpression(self.get_c_expression_to_code_mapper(),
-                    in_knl_callable_as_call))
+                                in_knl_callable_as_call))
 
     def emit_sequential_loop(self, codegen_state, iname, iname_dtype,
             lbound, ubound, inner):
@@ -1103,7 +1178,7 @@ class CFunctionDeclExtractor(CASTIdentityMapper):
 
     def map_function_decl_wrapper(self, node):
         self.decls.append(node.subdecl)
-        return super(CFunctionDeclExtractor, self)\
+        return super()\
                 .map_function_decl_wrapper(node)
 
 
@@ -1111,7 +1186,7 @@ def generate_header(kernel, codegen_result=None):
     """
     :arg kernel: a :class:`loopy.LoopKernel`
     :arg codegen_result: an instance of :class:`loopy.CodeGenerationResult`
-    :returns: a list of AST nodes (which may have :func:`str`
+    :returns: a list of AST nodes (which may have :class:`str`
         called on them to produce a string) representing
         function declarations for the generated device
         functions.
@@ -1119,7 +1194,7 @@ def generate_header(kernel, codegen_result=None):
 
     if not isinstance(kernel.target, CFamilyTarget):
         raise LoopyError(
-                'Header generation for non C-based languages are not implemented')
+                "Header generation for non C-based languages are not implemented")
 
     if codegen_result is None:
         from loopy.codegen import generate_code_v2
@@ -1159,7 +1234,7 @@ class CTarget(CFamilyTarget):
 class CASTBuilder(CFamilyASTBuilder):
     def preamble_generators(self):
         return (
-                super(CASTBuilder, self).preamble_generators() + [
+                super().preamble_generators() + [
                     c99_preamble_generator,
                     ])
 
@@ -1172,15 +1247,20 @@ class ExecutableCTarget(CTarget):
     """
     An executable CFamilyTarget that uses (by default) JIT compilation of C-code
     """
-
     def __init__(self, compiler=None, fortran_abi=False):
-        super(ExecutableCTarget, self).__init__(fortran_abi=fortran_abi)
+        super().__init__(fortran_abi=fortran_abi)
         from loopy.target.c.c_execution import CCompiler
         self.compiler = compiler or CCompiler()
 
-    def get_kernel_executor(self, knl, *args, **kwargs):
+    def get_kernel_executor_cache_key(self, *args, **kwargs):
+        # This is for things like the context in OpenCL. There is no such
+        # thing that CPU JIT is specific to.
+        return None
+
+    def get_kernel_executor(self, t_unit, *args, **kwargs):
         from loopy.target.c.c_execution import CKernelExecutor
-        return CKernelExecutor(knl, compiler=self.compiler)
+        return CKernelExecutor(t_unit, entrypoint=kwargs.pop("entrypoint"),
+                compiler=self.compiler)
 
     def get_host_ast_builder(self):
         # enable host code generation

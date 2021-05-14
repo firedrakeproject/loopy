@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import
-
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
 __license__ = """
@@ -22,7 +20,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from six.moves import range
 
 from loopy.diagnostic import warn, LoopyError
 from loopy.codegen.result import merge_codegen_results
@@ -236,7 +233,7 @@ def set_up_hw_parallel_loops(codegen_state, schedule_index, next_func,
     kernel = codegen_state.kernel
 
     from loopy.kernel.data import (UniqueTag, HardwareConcurrentTag,
-                LocalIndexTag, GroupIndexTag)
+                LocalIndexTag, GroupIndexTag, VectorizeTag)
 
     from loopy.schedule import get_insn_ids_for_block_at
     insn_ids_for_block = get_insn_ids_for_block_at(kernel.schedule, schedule_index)
@@ -247,13 +244,14 @@ def set_up_hw_parallel_loops(codegen_state, schedule_index, next_func,
             all_inames_by_insns |= kernel.insn_inames(insn_id)
 
         hw_inames_left = [iname for iname in all_inames_by_insns
-                if kernel.iname_tags_of_type(iname, HardwareConcurrentTag)]
+                if kernel.iname_tags_of_type(iname, HardwareConcurrentTag)
+                and not kernel.iname_tags_of_type(iname, VectorizeTag)]
 
     if not hw_inames_left:
         return next_func(codegen_state)
 
     global_size, local_size = kernel.get_grid_sizes_for_insn_ids(
-            insn_ids_for_block, codegen_state.callables_table)
+            insn_ids_for_block, codegen_state.callables_table, return_dict=True)
 
     hw_inames_left = hw_inames_left[:]
     iname = hw_inames_left.pop()
@@ -324,7 +322,7 @@ def set_up_hw_parallel_loops(codegen_state, schedule_index, next_func,
         if len(slabs) > 1:
             result.append(
                     codegen_state.ast_builder.emit_comment(
-                        "%s slab for '%s'" % (slab_name, iname)))
+                        f"{slab_name} slab for '{iname}'"))
 
         # Have the conditional infrastructure generate the
         # slabbing conditionals.
@@ -357,13 +355,14 @@ def generate_sequential_loop_dim_code(codegen_state, sched_index):
     from loopy.codegen.bounds import get_usable_inames_for_conditional
 
     # Note: this does not include loop_iname itself!
-    usable_inames = get_usable_inames_for_conditional(kernel, sched_index)
+    usable_inames = get_usable_inames_for_conditional(kernel, sched_index,
+            codegen_state.codegen_cachemanager)
     domain = kernel.get_inames_domain(loop_iname)
 
     result = []
 
     for slab_name, slab in slabs:
-        cmt = "%s slab for '%s'" % (slab_name, loop_iname)
+        cmt = f"{slab_name} slab for '{loop_iname}'"
         if len(slabs) == 1:
             cmt = None
 

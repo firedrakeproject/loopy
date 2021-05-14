@@ -1,5 +1,3 @@
-from __future__ import division, with_statement, absolute_import
-
 __copyright__ = "Copyright (C) 2017 Nick Curtis"
 
 __license__ = """
@@ -32,7 +30,6 @@ from pytools.py_codegen import (Indentation)
 from pytools.prefork import ExecError
 from codepy.toolchain import guess_toolchain, ToolchainGuessError, GCCToolchain
 from codepy.jit import compile_from_string
-import six
 import ctypes
 
 import numpy as np
@@ -49,12 +46,12 @@ class CExecutionWrapperGenerator(ExecutionWrapperGeneratorBase):
 
     def __init__(self):
         system_args = ["_lpy_c_kernels"]
-        super(CExecutionWrapperGenerator, self).__init__(system_args)
+        super().__init__(system_args)
 
     def python_dtype_str(self, dtype):
         if np.dtype(str(dtype)).isbuiltin:
             return "_lpy_np."+dtype.name
-        raise Exception('dtype: {0} not recognized'.format(dtype))
+        raise Exception(f"dtype: {dtype} not recognized")
 
     # {{{ handle non numpy arguements
 
@@ -95,7 +92,7 @@ class CExecutionWrapperGenerator(ExecutionWrapperGeneratorBase):
                 for i in range(num_axes))
 
         # find order of array
-        order = "'C'" if arg.unvec_strides[-1] == 1 else "'F'"
+        order = "'C'" if (arg.shape == () or arg.unvec_strides[-1] == 1) else "'F'"
 
         gen("%(name)s = _lpy_np.empty(%(shape)s, "
                 "%(dtype)s, order=%(order)s)"
@@ -110,7 +107,7 @@ class CExecutionWrapperGenerator(ExecutionWrapperGeneratorBase):
                 var("_lpy_expected_strides_%s" % i)
                 for i in range(num_axes))
 
-        gen("%s = %s.strides" % (strify(expected_strides), arg.name))
+        gen("{} = {}.strides".format(strify(expected_strides), arg.name))
 
         #check strides
         if not skip_arg_checks:
@@ -149,7 +146,7 @@ class CExecutionWrapperGenerator(ExecutionWrapperGeneratorBase):
             kernel, implemented_data_info):
         gen("for knl in _lpy_c_kernels:")
         with Indentation(gen):
-            gen('knl({args})'.format(
+            gen("knl({args})".format(
                 args=", ".join(args)))
 
     # }}}
@@ -157,22 +154,22 @@ class CExecutionWrapperGenerator(ExecutionWrapperGeneratorBase):
     # {{{
 
     def generate_output_handler(
-            self, gen, options, program, implemented_data_info):
+            self, gen, options, kernel, implemented_data_info):
 
         from loopy.kernel.data import KernelArgument
 
         if options.return_dict:
             gen("return None, {%s}"
-                    % ", ".join("\"%s\": %s" % (arg.name, arg.name)
+                    % ", ".join(f'"{arg.name}": {arg.name}'
                         for arg in implemented_data_info
                         if issubclass(arg.arg_class, KernelArgument)
                         if arg.base_name in
-                        program.root_kernel.get_written_variables()))
+                        kernel.get_written_variables()))
         else:
             out_args = [arg
                     for arg in implemented_data_info
                         if issubclass(arg.arg_class, KernelArgument)
-                    if arg.base_name in program.root_kernel.get_written_variables()]
+                    if arg.base_name in kernel.get_written_variables()]
             if out_args:
                 gen("return None, (%s,)"
                         % ", ".join(arg.name for arg in out_args))
@@ -191,7 +188,7 @@ class CExecutionWrapperGenerator(ExecutionWrapperGeneratorBase):
         return arg.name
 
 
-class CCompiler(object):
+class CCompiler:
     """
     The compiler module handles invocation of compilers to generate a shared lib
     using codepy, which can subsequently be loaded via ctypes.
@@ -212,10 +209,10 @@ class CCompiler(object):
     """
 
     def __init__(self, toolchain=None,
-                 cc='gcc', cflags='-std=c99 -O3 -fPIC'.split(),
-                 ldflags='-shared'.split(), libraries=[],
+                 cc="gcc", cflags="-std=c99 -O3 -fPIC".split(),
+                 ldflags="-shared".split(), libraries=[],
                  include_dirs=[], library_dirs=[], defines=[],
-                 source_suffix='c'):
+                 source_suffix="c"):
         # try to get a default toolchain
         # or subclass supplied version if available
         self.toolchain = toolchain
@@ -226,36 +223,36 @@ class CCompiler(object):
                 # missing compiler python was built with (likely, Conda)
                 # use a default GCCToolchain
                 logger = logging.getLogger(__name__)
-                logger.warn('Default toolchain guessed from python config '
-                            'not found, replacing with default GCCToolchain.')
+                logger.warn("Default toolchain guessed from python config "
+                            "not found, replacing with default GCCToolchain.")
                 # this is ugly, but I'm not sure there's a clean way to copy the
                 # default args
                 self.toolchain = GCCToolchain(
-                    cc='gcc',
-                    cflags='-std=c99 -O3 -fPIC'.split(),
-                    ldflags='-shared'.split(),
+                    cc="gcc",
+                    cflags="-std=c99 -O3 -fPIC".split(),
+                    ldflags="-shared".split(),
                     libraries=[],
                     library_dirs=[],
                     defines=[],
                     undefines=[],
-                    source_suffix='c',
-                    so_ext='.so',
-                    o_ext='.o',
+                    source_suffix="c",
+                    so_ext=".so",
+                    o_ext=".o",
                     include_dirs=[])
 
         if toolchain is None:
             # copy in all differing values
-            diff = {'cc': cc,
-                    'cflags': cflags,
-                    'ldflags': ldflags,
-                    'libraries': libraries,
-                    'include_dirs': include_dirs,
-                    'library_dirs': library_dirs,
-                    'defines': defines}
+            diff = {"cc": cc,
+                    "cflags": cflags,
+                    "ldflags": ldflags,
+                    "libraries": libraries,
+                    "include_dirs": include_dirs,
+                    "library_dirs": library_dirs,
+                    "defines": defines}
             # filter empty and those equal to toolchain defaults
-            diff = dict((k, v) for k, v in six.iteritems(diff)
+            diff = {k: v for k, v in diff.items()
                     if v and (not hasattr(self.toolchain, k) or
-                              getattr(self.toolchain, k) != v))
+                              getattr(self.toolchain, k) != v)}
             self.toolchain = self.toolchain.copy(**diff)
         self.tempdir = tempfile.mkdtemp(prefix="tmp_loopy")
         self.source_suffix = source_suffix
@@ -268,7 +265,7 @@ class CCompiler(object):
                      debug_recompile=True):
         """Compile code, build and load shared library."""
         logger.debug(code)
-        c_fname = self._tempname('code.' + self.source_suffix)
+        c_fname = self._tempname("code." + self.source_suffix)
 
         # build object
         _, mod_name, ext_file, recompiled = \
@@ -277,9 +274,9 @@ class CCompiler(object):
                                 debug_recompile, False)
 
         if recompiled:
-            logger.debug('Kernel {0} compiled from source'.format(name))
+            logger.debug(f"Kernel {name} compiled from source")
         else:
-            logger.debug('Kernel {0} retrieved from cache'.format(name))
+            logger.debug(f"Kernel {name} retrieved from cache")
 
         # and return compiled
         return ctypes.CDLL(ext_file)
@@ -289,12 +286,12 @@ class CPlusPlusCompiler(CCompiler):
     """Subclass of CCompiler to invoke a C++ compiler."""
 
     def __init__(self, toolchain=None,
-                 cc='g++', cflags='-std=c++98 -O3 -fPIC'.split(),
+                 cc="g++", cflags="-std=c++98 -O3 -fPIC".split(),
                  ldflags=[], libraries=[],
                  include_dirs=[], library_dirs=[], defines=[],
-                 source_suffix='cpp'):
+                 source_suffix="cpp"):
 
-        super(CPlusPlusCompiler, self).__init__(
+        super().__init__(
             toolchain=toolchain, cc=cc, cflags=cflags, ldflags=ldflags,
             libraries=libraries, include_dirs=include_dirs,
             library_dirs=library_dirs, defines=defines, source_suffix=source_suffix)
@@ -331,15 +328,16 @@ class IDIToCDLL:
     """
     def __init__(self, target):
         self.target = target
-        from loopy.target.c import CFamilyTarget
-        self.registry = CFamilyTarget().get_dtype_registry().wrapped_registry
+        from loopy.target.c import CTarget
+        self.registry = CTarget().get_dtype_registry().wrapped_registry
 
     def __call__(self, knl, idi):
         # next loop through the implemented data info to get the arg data
         arg_info = []
         for arg in idi:
-            # check if pointer
-            pointer = arg.shape
+            # check if pointer: outputs and arrays must be passed
+            # by reference.
+            pointer = arg.shape or arg.is_written
             arg_info.append(self._dtype_to_ctype(arg.dtype, pointer))
 
         return arg_info
@@ -357,7 +355,7 @@ class IDIToCDLL:
         return basetype
 
 
-class CompiledCKernel(object):
+class CompiledCKernel:
     """
     A CompiledCKernel wraps a loopy kernel, compiling it and loading the
     result as a shared library, and provides access to the kernel as a
@@ -387,7 +385,7 @@ class CompiledCKernel(object):
         """Execute kernel with given args mapped to ctypes equivalents."""
         args_ = []
         for arg, arg_t in zip(args, self._fn.argtypes):
-            if hasattr(arg, 'ctypes'):
+            if hasattr(arg, "ctypes"):
                 if arg.size == 0:
                     # TODO eliminate unused arguments from kernel
                     arg_ = arg_t(0.0)
@@ -407,7 +405,7 @@ class CKernelExecutor(KernelExecutorBase):
     .. automethod:: __call__
     """
 
-    def __init__(self, program, compiler=None):
+    def __init__(self, program, entrypoint, compiler=None):
         """
         :arg kernel: may be a loopy.LoopKernel, a generator returning kernels
             (a warning will be issued if more than one is returned). If the
@@ -416,51 +414,57 @@ class CKernelExecutor(KernelExecutorBase):
         """
 
         self.compiler = compiler if compiler else CCompiler()
-        super(CKernelExecutor, self).__init__(program)
+        super().__init__(program, entrypoint)
 
-    def get_invoker_uncached(self, kernel, codegen_result):
+    def get_invoker_uncached(self, kernel, entrypoint, codegen_result):
         generator = CExecutionWrapperGenerator()
-        return generator(kernel, codegen_result)
+        return generator(kernel, entrypoint, codegen_result)
+
+    def get_wrapper_generator(self):
+        return CExecutionWrapperGenerator()
 
     @memoize_method
-    def program_info(self, arg_to_dtype_set=frozenset(), all_kwargs=None):
-        program = self.get_typed_and_scheduled_program(arg_to_dtype_set)
+    def program_info(self, entrypoint, arg_to_dtype_set=frozenset(),
+            all_kwargs=None):
+        program = self.get_typed_and_scheduled_program(entrypoint, arg_to_dtype_set)
 
         from loopy.codegen import generate_code_v2
         codegen_result = generate_code_v2(program)
 
         dev_code = codegen_result.device_code()
         host_code = codegen_result.host_code()
-        all_code = '\n'.join([dev_code, '', host_code])
+        all_code = "\n".join([dev_code, "", host_code])
 
-        if self.program.root_kernel.options.write_cl:
+        if self.program[entrypoint].options.write_cl:
             output = all_code
-            if self.program.root_kernel.options.highlight_cl:
+            if self.program[entrypoint].options.highlight_cl:
                 output = get_highlighted_code(output)
 
-            if self.program.root_kernel.options.write_cl is True:
+            if self.program[entrypoint].options.write_cl is True:
                 print(output)
             else:
-                with open(self.program.root_kernel.options.write_cl, "w") as outf:
+                with open(self.program[entrypoint].options.write_cl, "w") as outf:
                     outf.write(output)
 
-        if self.program.root_kernel.options.edit_cl:
+        if self.program[entrypoint].options.edit_cl:
             from pytools import invoke_editor
             dev_code = invoke_editor(dev_code, "code.c")
             # update code from editor
-            all_code = '\n'.join([dev_code, '', host_code])
+            all_code = "\n".join([dev_code, "", host_code])
 
         c_kernels = []
+
         for dp in codegen_result.device_programs:
             c_kernels.append(CompiledCKernel(dp,
-                codegen_result.implemented_data_info, all_code, self.program.target,
-                self.compiler))
+                codegen_result.implemented_data_infos[entrypoint], all_code,
+                self.program.target, self.compiler))
 
         return _KernelInfo(
                 program=program,
                 c_kernels=c_kernels,
-                implemented_data_info=codegen_result.implemented_data_info,
-                invoker=self.get_invoker(program, codegen_result))
+                implemented_data_info=codegen_result.implemented_data_infos[
+                    entrypoint],
+                invoker=self.get_invoker(program, entrypoint, codegen_result))
 
     # }}}
 
@@ -477,7 +481,9 @@ class CKernelExecutor(KernelExecutorBase):
 
         kwargs = self.packing_controller.unpack(kwargs)
 
-        program_info = self.program_info(self.arg_to_dtype_set(kwargs))
+        program_info = self.program_info(kwargs["entrypoint"],
+                self.arg_to_dtype_set(kwargs))
+        kwargs.pop("entrypoint")
 
         return program_info.invoker(
                 program_info.c_kernels, *args, **kwargs)

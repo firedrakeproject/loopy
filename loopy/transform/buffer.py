@@ -1,6 +1,3 @@
-from __future__ import division, absolute_import
-from six.moves import range
-
 __copyright__ = "Copyright (C) 2012-2015 Andreas Kloeckner"
 
 __license__ = """
@@ -33,9 +30,9 @@ from pytools.persistent_dict import WriteOncePersistentDict
 from loopy.tools import LoopyKeyBuilder, PymbolicExpressionHashWrapper
 from loopy.version import DATA_MODEL_VERSION
 from loopy.diagnostic import LoopyError
-from loopy.program import Program
 from loopy.kernel import LoopKernel
-from loopy.kernel.function_interface import ScalarCallable, CallableKernel
+from loopy.translation_unit import TranslationUnit
+from loopy.kernel.function_interface import CallableKernel, ScalarCallable
 
 from pymbolic import var
 
@@ -48,7 +45,7 @@ logger = logging.getLogger(__name__)
 class ArrayAccessReplacer(RuleAwareIdentityMapper):
     def __init__(self, rule_mapping_context,
             var_name, within, array_base_map, buf_var):
-        super(ArrayAccessReplacer, self).__init__(rule_mapping_context)
+        super().__init__(rule_mapping_context)
 
         self.within = within
 
@@ -68,7 +65,7 @@ class ArrayAccessReplacer(RuleAwareIdentityMapper):
             result = self.map_array_access((), expn_state)
 
         if result is None:
-            return super(ArrayAccessReplacer, self).map_variable(expr, expn_state)
+            return super().map_variable(expr, expn_state)
         else:
             self.modified_insn_ids.add(expn_state.insn_id)
             return result
@@ -82,7 +79,7 @@ class ArrayAccessReplacer(RuleAwareIdentityMapper):
             result = self.map_array_access(expr.index_tuple, expn_state)
 
         if result is None:
-            return super(ArrayAccessReplacer, self).map_subscript(expr, expn_state)
+            return super().map_subscript(expr, expn_state)
         else:
             self.modified_insn_ids.add(expn_state.insn_id)
             return result
@@ -171,6 +168,18 @@ def buffer_array_for_single_kernel(kernel, callables_table, var_name,
         rectangular (and hence convex) superset of the footprint to be
         fetched.
     """
+
+    if isinstance(kernel, TranslationUnit):
+        kernel_names = [i for i, clbl in
+                kernel.callables_table.items() if isinstance(clbl,
+                    CallableKernel)]
+        if len(kernel_names) != 1:
+            raise LoopyError()
+
+        return kernel.with_kernel(buffer_array(kernel[kernel_names[0]],
+            var_name, buffer_inames, init_expression, store_expression, within,
+            default_tag, temporary_scope, temporary_is_local,
+            fetch_bounding_box, kernel.callables_table))
 
     assert isinstance(kernel, LoopKernel)
 
@@ -309,8 +318,8 @@ def buffer_array_for_single_kernel(kernel, callables_table, var_name,
         if isinstance(var_descr, ArrayBase) and var_descr.dim_names is not None:
             dim_name = var_descr.dim_names[i]
 
-        init_iname = var_name_gen("%s_init_%s" % (var_name, dim_name))
-        store_iname = var_name_gen("%s_store_%s" % (var_name, dim_name))
+        init_iname = var_name_gen(f"{var_name}_init_{dim_name}")
+        store_iname = var_name_gen(f"{var_name}_store_{dim_name}")
 
         new_iname_to_tag[init_iname] = default_tag
         new_iname_to_tag[store_iname] = default_tag
@@ -545,27 +554,23 @@ def buffer_array_for_single_kernel(kernel, callables_table, var_name,
 
 
 def buffer_array(program, *args, **kwargs):
-    assert isinstance(program, Program)
+    assert isinstance(program, TranslationUnit)
 
-    new_resolved_functions = {}
-    for func_id, in_knl_callable in program.callables_table.items():
-        if isinstance(in_knl_callable, CallableKernel):
-            new_subkernel = buffer_array_for_single_kernel(
-                    in_knl_callable.subkernel, program.callables_table,
-                    *args, **kwargs)
-            in_knl_callable = in_knl_callable.copy(
-                    subkernel=new_subkernel)
+    new_callables = {}
 
-        elif isinstance(in_knl_callable, ScalarCallable):
+    for func_id, clbl in program.callables_table.items():
+        if isinstance(clbl, CallableKernel):
+            clbl = clbl.copy(
+                    subkernel=buffer_array_for_single_kernel(clbl.subkernel,
+                        program.callables_table, *args, **kwargs))
+        elif isinstance(clbl, ScalarCallable):
             pass
         else:
-            raise NotImplementedError("Unknown type of callable %s." % (
-                type(in_knl_callable).__name__))
+            raise NotImplementedError()
 
-        new_resolved_functions[func_id] = in_knl_callable
+        new_callables[func_id] = clbl
 
-    new_callables_table = program.callables_table.copy(
-            resolved_functions=new_resolved_functions)
-    return program.copy(callables_table=new_callables_table)
+    return program.copy(callables_table=new_callables)
+
 
 # vim: foldmethod=marker

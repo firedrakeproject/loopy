@@ -1,6 +1,5 @@
 """CUDA target independent of PyCUDA."""
 
-from __future__ import division, absolute_import
 
 __copyright__ = "Copyright (C) 2015 Andreas Kloeckner"
 
@@ -30,7 +29,7 @@ from pytools import memoize_method
 
 from loopy.target.c import CFamilyTarget, CFamilyASTBuilder
 from loopy.target.c.codegen.expression import ExpressionToCExpressionMapper
-from loopy.diagnostic import LoopyError
+from loopy.diagnostic import LoopyError, LoopyTypeError
 from loopy.types import NumpyType
 from loopy.kernel.data import AddressSpace
 from pymbolic import var
@@ -59,18 +58,18 @@ def _create_vector_types():
     vec.type_to_scalar_and_count = {}
 
     for base_name, base_type, counts in [
-            ('char', np.int8, [1, 2, 3, 4]),
-            ('uchar', np.uint8, [1, 2, 3, 4]),
-            ('short', np.int16, [1, 2, 3, 4]),
-            ('ushort', np.uint16, [1, 2, 3, 4]),
-            ('int', np.int32, [1, 2, 3, 4]),
-            ('uint', np.uint32, [1, 2, 3, 4]),
-            ('long', long_dtype, [1, 2, 3, 4]),
-            ('ulong', ulong_dtype, [1, 2, 3, 4]),
-            ('longlong', np.int64, [1, 2]),
-            ('ulonglong', np.uint64, [1, 2]),
-            ('float', np.float32, [1, 2, 3, 4]),
-            ('double', np.float64, [1, 2]),
+            ("char", np.int8, [1, 2, 3, 4]),
+            ("uchar", np.uint8, [1, 2, 3, 4]),
+            ("short", np.int16, [1, 2, 3, 4]),
+            ("ushort", np.uint16, [1, 2, 3, 4]),
+            ("int", np.int32, [1, 2, 3, 4]),
+            ("uint", np.uint32, [1, 2, 3, 4]),
+            ("long", long_dtype, [1, 2, 3, 4]),
+            ("ulong", ulong_dtype, [1, 2, 3, 4]),
+            ("longlong", np.int64, [1, 2]),
+            ("ulonglong", np.uint64, [1, 2]),
+            ("float", np.float32, [1, 2, 3, 4]),
+            ("double", np.float64, [1, 2]),
             ]:
         for count in counts:
             name = "%s%d" % (base_name, count)
@@ -122,38 +121,25 @@ _CUDA_SPECIFIC_FUNCTIONS = {
 
 class CudaCallable(ScalarCallable):
 
-    def cuda_with_types(self, arg_id_to_dtype, caller_kernel,
-            callables_table):
+    def cuda_with_types(self, arg_id_to_dtype, callables_table):
 
         name = self.name
 
-        if name == "dot":
-            for id in arg_id_to_dtype:
-                if not -1 <= id <= 1:
-                    raise LoopyError("%s can take only 2 arguments." % name)
-
-            if 0 not in arg_id_to_dtype or 1 not in arg_id_to_dtype or (
-                    arg_id_to_dtype[0] is None or arg_id_to_dtype[1] is None):
-                # the types provided aren't mature enough to specialize the
-                # callable
-                return (
-                        self.copy(arg_id_to_dtype=arg_id_to_dtype),
-                        callables_table)
-
-            dtype = arg_id_to_dtype[0]
-            scalar_dtype, offset, field_name = dtype.numpy_dtype.fields["x"]
-            return (
-                    self.copy(name_in_target=name, arg_id_to_dtype={-1:
-                        NumpyType(scalar_dtype),
-                        0: dtype, 1: dtype}),
-                    callables_table)
-
         if name in _CUDA_SPECIFIC_FUNCTIONS:
             num_args = _CUDA_SPECIFIC_FUNCTIONS[name]
-            for id in arg_id_to_dtype:
+
+            # {{{ sanity checks
+
+            for id, dtype in arg_id_to_dtype.items():
                 if not -1 <= id < num_args:
                     raise LoopyError("%s can take only %d arguments." % (name,
                             num_args))
+
+                if dtype is not None and dtype.kind == "c":
+                    raise LoopyTypeError(
+                        f"'{name}' does not support complex arguments.")
+
+            # }}}
 
             for i in range(num_args):
                 if i not in arg_id_to_dtype or arg_id_to_dtype[i] is None:
@@ -167,29 +153,40 @@ class CudaCallable(ScalarCallable):
                     [], [dtype.numpy_dtype for id, dtype in
                         arg_id_to_dtype.items() if id >= 0])
 
-            if dtype.kind == "c":
-                raise LoopyError("%s does not support complex numbers"
-                        % name)
-
-            updated_arg_id_to_dtype = dict((id, NumpyType(dtype)) for id in range(-1,
-                num_args))
+            updated_arg_id_to_dtype = {id: NumpyType(dtype)
+                    for id in range(-1, num_args)}
 
             return (
                     self.copy(name_in_target=name,
                         arg_id_to_dtype=updated_arg_id_to_dtype),
                     callables_table)
 
+        if name == "dot":
+            # CUDA dot function:
+            # Performs dot product. Input types: vector and return type: scalar.
+            for i in range(2):
+                if i not in arg_id_to_dtype or arg_id_to_dtype[i] is None:
+                    # the types provided aren't mature enough to specialize the
+                    # callable
+                    return (
+                            self.copy(arg_id_to_dtype=arg_id_to_dtype),
+                            callables_table)
+
+            input_dtype = arg_id_to_dtype[0]
+
+            scalar_dtype, offset, field_name = input_dtype.fields["x"]
+            return_dtype = scalar_dtype
+            return self.copy(arg_id_to_dtype={0: input_dtype, 1: input_dtype,
+                                              -1: return_dtype})
+
         return (
                 self.copy(arg_id_to_dtype=arg_id_to_dtype),
                 callables_table)
 
 
-def scope_cuda_functions(target, identifier):
-    if identifier in set(["dot"]) | set(
-            _CUDA_SPECIFIC_FUNCTIONS):
-        return CudaCallable(name=identifier)
-
-    return None
+def get_cuda_callables():
+    cuda_func_ids = {"dot"} | set(_CUDA_SPECIFIC_FUNCTIONS)
+    return {id_: CudaCallable(name=id_) for id_ in cuda_func_ids}
 
 # }}}
 
@@ -209,12 +206,12 @@ class ExpressionToCudaCExpressionMapper(ExpressionToCExpressionMapper):
             raise LoopyError("unexpected index type")
 
     def map_group_hw_index(self, expr, type_context):
-        return var("((%s) blockIdx.%s)" % (
+        return var("(({}) blockIdx.{})".format(
             self._get_index_ctype(self.kernel),
             self._GRID_AXES[expr.axis]))
 
     def map_local_hw_index(self, expr, type_context):
-        return var("((%s) threadIdx.%s)" % (
+        return var("(({}) threadIdx.{})".format(
             self._get_index_ctype(self.kernel),
             self._GRID_AXES[expr.axis]))
 
@@ -233,7 +230,7 @@ class CudaTarget(CFamilyTarget):
         """
         self.extern_c = extern_c
 
-        super(CudaTarget, self).__init__()
+        super().__init__()
 
     def split_kernel_at_global_barriers(self):
         return True
@@ -311,9 +308,11 @@ def cuda_preamble_generator(preamble_info):
 class CUDACASTBuilder(CFamilyASTBuilder):
     # {{{ library
 
-    def function_id_in_knl_callable_mapper(self):
-        return [scope_cuda_functions] + (
-                super(CUDACASTBuilder, self).function_id_in_knl_callable_mapper())
+    @property
+    def known_callables(self):
+        callables = super().known_callables
+        callables.update(get_cuda_callables())
+        return callables
 
     # }}}
 
@@ -321,7 +320,7 @@ class CUDACASTBuilder(CFamilyASTBuilder):
 
     def get_function_declaration(self, codegen_state, codegen_result,
             schedule_index):
-        fdecl = super(CUDACASTBuilder, self).get_function_declaration(
+        fdecl = super().get_function_declaration(
                 codegen_state, codegen_result, schedule_index)
 
         from loopy.target.c import FunctionDeclarationWrapper
@@ -356,7 +355,7 @@ class CUDACASTBuilder(CFamilyASTBuilder):
     def preamble_generators(self):
 
         return (
-                super(CUDACASTBuilder, self).preamble_generators() + [
+                super().preamble_generators() + [
                     cuda_preamble_generator])
 
     # }}}
@@ -456,7 +455,7 @@ class CUDACASTBuilder(CFamilyASTBuilder):
                 lhs_expr_code = ecm(lhs_expr)
                 rhs_expr_code = ecm(new_rhs_expr)
 
-                return Statement("atomicAdd(&{0}, {1})".format(
+                return Statement("atomicAdd(&{}, {})".format(
                     lhs_expr_code, rhs_expr_code))
             else:
                 from cgen import Block, DoWhile, Assign

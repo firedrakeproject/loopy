@@ -1,6 +1,5 @@
 """Python host AST builder for integration with PyOpenCL."""
 
-from __future__ import division, absolute_import
 
 __copyright__ = "Copyright (C) 2016 Andreas Kloeckner"
 
@@ -24,16 +23,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import six
-import numpy as np
-
 from pymbolic.mapper import Mapper
 from pymbolic.mapper.stringifier import StringifyMapper
-from loopy.type_inference import TypeInferenceMapper
+from loopy.type_inference import TypeReader
 from loopy.kernel.data import ValueArg
 from loopy.diagnostic import LoopyError  # noqa
 from loopy.target import ASTBuilderBase
-from genpy import Suite
+from genpy import Suite, Collection
 
 
 # {{{ expression to code
@@ -44,7 +40,7 @@ class ExpressionToPythonMapper(StringifyMapper):
         self.codegen_state = codegen_state
 
         if type_inf_mapper is None:
-            type_inf_mapper = TypeInferenceMapper(self.kernel,
+            type_inf_mapper = TypeReader(self.kernel,
                     self.codegen_state.callables_table)
         self.type_inf_mapper = type_inf_mapper
 
@@ -52,7 +48,7 @@ class ExpressionToPythonMapper(StringifyMapper):
         return Mapper.handle_unsupported_expression(self, victim, enclosing_prec)
 
     def rec(self, expr, prec, type_context=None, needed_dtype=None):
-        return super(ExpressionToPythonMapper, self).rec(expr, prec)
+        return super().rec(expr, prec)
 
     __call__ = rec
 
@@ -67,19 +63,19 @@ class ExpressionToPythonMapper(StringifyMapper):
                 enclosing_prec))
 
         if expr.name in self.kernel.all_inames():
-            return super(ExpressionToPythonMapper, self).map_variable(
+            return super().map_variable(
                     expr, enclosing_prec)
 
         var_descr = self.kernel.get_var_descriptor(expr.name)
         if isinstance(var_descr, ValueArg):
-            return super(ExpressionToPythonMapper, self).map_variable(
+            return super().map_variable(
                     expr, enclosing_prec)
 
-        return super(ExpressionToPythonMapper, self).map_variable(
+        return super().map_variable(
                 expr, enclosing_prec)
 
     def map_subscript(self, expr, enclosing_prec):
-        return super(ExpressionToPythonMapper, self).map_subscript(
+        return super().map_subscript(
                 expr, enclosing_prec)
 
     def map_call(self, expr, enclosing_prec):
@@ -92,20 +88,12 @@ class ExpressionToPythonMapper(StringifyMapper):
             raise LoopyError(
                     "indexof, indexof_vec not yet supported in Python")
 
-        from loopy.kernel.function_interface import ManglerCallable
-        in_knl_callable = self.codegen_state.callables_table[
+        clbl = self.codegen_state.callables_table[
                 expr.function.name]
-        if isinstance(in_knl_callable, ManglerCallable):
-            from loopy.codegen import SeenFunction
-            mangle_result = in_knl_callable.mangle_result(self.kernel)
-            self.codegen_state.seen_functions.add(
-                    SeenFunction(identifier_name,
-                        mangle_result.target_name,
-                        mangle_result.arg_dtypes))
 
         str_parameters = None
         number_of_assignees = len([key for key in
-            in_knl_callable.arg_id_to_dtype.keys() if key < 0])
+            clbl.arg_id_to_dtype.keys() if key < 0])
 
         if number_of_assignees != 1:
             raise LoopyError("functions with more or fewer than one return value "
@@ -113,7 +101,8 @@ class ExpressionToPythonMapper(StringifyMapper):
 
         str_parameters = [self.rec(par, PREC_NONE) for par in expr.parameters]
 
-        return "%s(%s)" % (in_knl_callable.name_in_target, ", ".join(str_parameters))
+        return "{}({})".format(clbl.name_in_target,
+                               ", ".join(str_parameters))
 
     def map_group_hw_index(self, expr, enclosing_prec):
         raise LoopyError("plain Python does not have group hw axes")
@@ -139,33 +128,7 @@ class ExpressionToPythonMapper(StringifyMapper):
 # }}}
 
 
-# {{{ genpy extensions
-
-class Collection(Suite):
-    def generate(self):
-        for item in self.contents:
-            for item_line in item.generate():
-                yield item_line
-
-# }}}
-
-
 # {{{ ast builder
-
-def _numpy_single_arg_function_mangler(kernel, name, arg_dtypes):
-    if (not isinstance(name, str)
-            or not hasattr(np, name)
-            or len(arg_dtypes) != 1):
-        return None
-
-    arg_dtype, = arg_dtypes
-
-    from loopy.kernel.data import CallMangleInfo
-    return CallMangleInfo(
-            target_name="_lpy_np."+name,
-            result_dtypes=(arg_dtype,),
-            arg_dtypes=arg_dtypes)
-
 
 def _base_python_preamble_generator(preamble_info):
     yield ("00_future", "from __future__ import division, print_function\n")
@@ -178,20 +141,25 @@ class PythonASTBuilderBase(ASTBuilderBase):
     """A Python host AST builder for integration with PyOpenCL.
     """
 
-    # {{{ code generation guts
-
-    def function_id_in_knl_callable_mapper(self):
-        from loopy.target.c import scope_c_math_functions
-        return (
-                super(PythonASTBuilderBase,
-                    self).function_id_in_knl_callable_mapper() +
-                [scope_c_math_functions])
+    @property
+    def known_callables(self):
+        from loopy.target.c import get_c_callables
+        callables = super().known_callables
+        callables.update(get_c_callables())
+        return callables
 
     def preamble_generators(self):
         return (
-                super(PythonASTBuilderBase, self).preamble_generators() + [
+                super().preamble_generators() + [
                     _base_python_preamble_generator
                     ])
+
+    # {{{ code generation guts
+
+    @property
+    def ast_module(self):
+        import genpy
+        return genpy
 
     def get_function_declaration(self, codegen_state, codegen_result,
             schedule_index):
@@ -219,7 +187,7 @@ class PythonASTBuilderBase(ASTBuilderBase):
         from genpy import Assign
 
         for tv in sorted(
-                six.itervalues(kernel.temporary_variables),
+                kernel.temporary_variables.values(),
                 key=lambda tv: tv.name):
             if tv.shape:
                 result.append(
