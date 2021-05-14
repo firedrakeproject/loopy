@@ -1,7 +1,5 @@
 """Kernel object."""
 
-from __future__ import division, absolute_import
-
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
 __license__ = """
@@ -24,23 +22,23 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import six
-from six.moves import range, zip, intern
+from sys import intern
 
 from collections import defaultdict
 
 import numpy as np
 from pytools import ImmutableRecordWithoutPickling, ImmutableRecord, memoize_method
+from pytools.tag import Taggable
 import islpy as isl
 from islpy import dim_type
 import re
 
-from pytools import UniqueNameGenerator, generate_unique_names
+from pytools import UniqueNameGenerator, generate_unique_names, natsorted
 
 from loopy.diagnostic import CannotBranchDomainTree, LoopyError
-from loopy.tools import natsorted, update_persistent_hash
+from loopy.tools import update_persistent_hash
 from loopy.diagnostic import StaticValueFindingError
-from loopy.kernel.data import filter_iname_tags_by_type
+from loopy.kernel.data import filter_iname_tags_by_type, Iname
 from warnings import warn
 
 
@@ -49,7 +47,7 @@ from warnings import warn
 class _UniqueVarNameGenerator(UniqueNameGenerator):
 
     def __init__(self, existing_names=set(), forced_prefix=""):
-        super(_UniqueVarNameGenerator, self).__init__(existing_names, forced_prefix)
+        super().__init__(existing_names, forced_prefix)
         array_prefix_pattern = re.compile("(.*)_s[0-9]+$")
 
         array_prefixes = set()
@@ -95,14 +93,30 @@ class _UniqueVarNameGenerator(UniqueNameGenerator):
 
 # {{{ loop kernel object
 
+class _deprecated_KernelState_SCHEDULED:  # noqa
+    def __init__(self, f):
+        self.f = f
+
+    def __get__(self, obj, klass):
+        warn(
+            "'KernelState.SCHEDULED' is deprecated. "
+            "Use 'KernelState.LINEARIZED'.",
+            DeprecationWarning, stacklevel=2)
+        return self.f()
+
 class KernelState:  # noqa
     INITIAL = 0
-    PREPROCESSED = 1
-    SCHEDULED = 2
+    CALLS_RESOLVED = 1
+    PREPROCESSED = 2
+    LINEARIZED = 3
+
+    @_deprecated_KernelState_SCHEDULED
+    def SCHEDULED():  # pylint:disable=no-method-argument
+        return KernelState.LINEARIZED
 
 # {{{ kernel_state, KernelState compataibility
 
-class _deperecated_kernel_state_class_method(object):  # noqa
+class _deperecated_kernel_state_class_method:  # noqa
     def __init__(self, f):
         self.f = f
 
@@ -112,7 +126,7 @@ class _deperecated_kernel_state_class_method(object):  # noqa
         return self.f()
 
 
-class kernel_state(object):  # noqa
+class kernel_state:  # noqa
     """Deprecated. Use :class:`loopy.kernel.KernelState` instead.
     """
 
@@ -131,7 +145,16 @@ class kernel_state(object):  # noqa
 # }}}
 
 
-class LoopKernel(ImmutableRecordWithoutPickling):
+def _get_inames_from_domains(domains):
+    return frozenset().union(*
+            (frozenset(dom.get_var_names(dim_type.set)) for dom in domains))
+
+
+class _not_provided:  # noqa: N801
+    pass
+
+
+class LoopKernel(ImmutableRecordWithoutPickling, Taggable):
     """These correspond more or less directly to arguments of
     :func:`loopy.make_kernel`.
 
@@ -143,8 +166,8 @@ class LoopKernel(ImmutableRecordWithoutPickling):
 
     .. attribute:: domains
 
-        a list of :class:`islpy.BasicSet` instances
-        representing the :ref:`domain-tree`.
+        a list of :class:`islpy.BasicSet` instances representing the
+        :ref:`domain-tree`.
 
     .. attribute:: instructions
 
@@ -173,13 +196,6 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         :class:`loopy.TemporaryVariable`
         instances.
 
-    .. attribute:: iname_to_tags
-
-        A :class:`dict` mapping inames (as strings)
-        to set of instances of :class:`loopy.kernel.data.IndexTag`.
-        .. versionadded:: 2018.1
-
-    .. attribute:: function_manglers
     .. attribute:: symbol_manglers
 
     .. attribute:: substitutions
@@ -221,25 +237,33 @@ class LoopKernel(ImmutableRecordWithoutPickling):
 
         A subclass of :class:`loopy.TargetBase`.
 
-    .. attribute:: is_called_from_host
-        An instance of :class:`bool`. Will be set *False* for the kernel which
-        would be called from other top level kernels. Default value is
-        *True*.
+    .. attribute:: inames
 
+        An instance of :class:`dict`, a mapping from the names of kernel's
+        inames to their corresponding instances of :class:`loopy.kernel.data.Iname`.
+        An entry is guaranteed to be present for each iname.
+
+    .. automethod:: __call__
+    .. automethod:: copy
+
+    .. automethod:: tagged
+    .. automethod:: without_tags
     """
 
     # {{{ constructor
 
-    def __init__(self, domains, instructions, args=None, schedule=None,
+    def __init__(self, domains, instructions, args=None,
+            schedule=None,
+            linearization=None,
             name="loopy_kernel",
             preambles=None,
             preamble_generators=None,
             assumptions=None,
             local_sizes=None,
             temporary_variables=None,
+            inames=None,
             iname_to_tags=None,
             substitutions=None,
-            function_manglers=None,
             symbol_manglers=[],
 
             iname_slab_increments=None,
@@ -248,15 +272,15 @@ class LoopKernel(ImmutableRecordWithoutPickling):
 
             applied_iname_rewrites=None,
             cache_manager=None,
-            index_dtype=np.int32,
+            index_dtype=None,
             options=None,
 
             state=KernelState.INITIAL,
             target=None,
-            is_called_from_host=True,
 
             overridden_get_grid_sizes_for_insn_ids=None,
-            _cached_written_variables=None):
+            _cached_written_variables=None,
+            tags=frozenset()):
         """
         :arg overridden_get_grid_sizes_for_insn_ids: A callable. When kernels get
             intersected in slab decomposition, their grid sizes shouldn't
@@ -275,12 +299,8 @@ class LoopKernel(ImmutableRecordWithoutPickling):
             local_sizes = {}
         if temporary_variables is None:
             temporary_variables = {}
-        if iname_to_tags is None:
-            iname_to_tags = {}
         if substitutions is None:
             substitutions = {}
-        if function_manglers is None:
-            function_manglers = []
         if iname_slab_increments is None:
             iname_slab_increments = {}
 
@@ -292,6 +312,29 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         if cache_manager is None:
             from loopy.kernel.tools import SetOperationCacheManager
             cache_manager = SetOperationCacheManager()
+
+        if iname_to_tags is not None:
+            warn("Providing iname_to_tags is deprecated, pass inames instead. "
+                    "Will be unsupported in 2022.",
+                    DeprecationWarning, stacklevel=2)
+
+        if inames is None:
+            if iname_to_tags is None:
+                iname_to_tags = {}
+
+            inames = {name: Iname(name, iname_to_tags.get(name, frozenset()))
+                      for name in _get_inames_from_domains(domains)}
+        else:
+            if iname_to_tags is not None:
+                raise LoopyError("Cannot provide both iname_to_tags and inames to "
+                        "LoopKernel.__init__")
+
+            inames = {
+                name: inames.get(name, Iname(name, frozenset()))
+                for name in _get_inames_from_domains(domains)}
+
+        if index_dtype is None:
+            index_dtype = np.int32
 
         # }}}
 
@@ -327,23 +370,33 @@ class LoopKernel(ImmutableRecordWithoutPickling):
 
         if state not in [
                 KernelState.INITIAL,
+                KernelState.CALLS_RESOLVED,
                 KernelState.PREPROCESSED,
-                KernelState.SCHEDULED,
+                KernelState.LINEARIZED,
                 ]:
             raise ValueError("invalid value for 'state'")
 
-        from collections import defaultdict
-        assert not isinstance(iname_to_tags, defaultdict)
-
-        for iname, tags in six.iteritems(iname_to_tags):
-            # don't tolerate empty sets
-            assert tags
-            assert isinstance(tags, frozenset)
+        # `linearization` is replacing `schedule`, but we're not changing
+        # this under the hood yet, so for now, store it inside `schedule`
+        # and raise deprecation warning anyway
+        if schedule is not None:
+            if linearization is not None:
+                # these should not both be present
+                raise ValueError(
+                    "received both `schedule` and `linearization` args, "
+                    "'LoopKernel.schedule' is deprecated. "
+                    "Use 'LoopKernel.linearization'.")
+            warn(
+                "'LoopKernel.schedule' is deprecated. "
+                "Use 'LoopKernel.linearization'.",
+                DeprecationWarning, stacklevel=2)
+        elif linearization is not None:
+            schedule = linearization
 
         assert all(dom.get_ctx() == isl.DEFAULT_CONTEXT for dom in domains)
         assert assumptions.get_ctx() == isl.DEFAULT_CONTEXT
 
-        ImmutableRecordWithoutPickling.__init__(self,
+        super().__init__(
                 domains=domains,
                 instructions=instructions,
                 args=args,
@@ -357,67 +410,21 @@ class LoopKernel(ImmutableRecordWithoutPickling):
                 silenced_warnings=silenced_warnings,
                 temporary_variables=temporary_variables,
                 local_sizes=local_sizes,
-                iname_to_tags=iname_to_tags,
+                inames=inames,
                 substitutions=substitutions,
                 cache_manager=cache_manager,
                 applied_iname_rewrites=applied_iname_rewrites,
-                function_manglers=function_manglers,
                 symbol_manglers=symbol_manglers,
                 index_dtype=index_dtype,
                 options=options,
                 state=state,
                 target=target,
-                is_called_from_host=is_called_from_host,
                 overridden_get_grid_sizes_for_insn_ids=(
                     overridden_get_grid_sizes_for_insn_ids),
-                _cached_written_variables=_cached_written_variables)
+                _cached_written_variables=_cached_written_variables,
+                tags=tags)
 
         self._kernel_executor_cache = {}
-
-    # }}}
-
-    # {{{ function mangling/scoping
-
-    def mangle_function(self, identifier, arg_dtypes, ast_builder=None):
-        if ast_builder is None:
-            ast_builder = self.target.get_device_ast_builder()
-
-        manglers = ast_builder.function_manglers() + self.function_manglers
-
-        for mangler in manglers:
-            mangle_result = mangler(self, identifier, arg_dtypes)
-            if mangle_result is not None:
-                from loopy.kernel.data import CallMangleInfo
-                if isinstance(mangle_result, CallMangleInfo):
-                    assert len(mangle_result.arg_dtypes) == len(arg_dtypes)
-                    return mangle_result
-
-                assert isinstance(mangle_result, tuple)
-
-                from warnings import warn
-                warn("'%s' returned a tuple instead of a CallMangleInfo instance. "
-                        "This is deprecated." % mangler.__name__,
-                        DeprecationWarning)
-
-                if len(mangle_result) == 2:
-                    result_dtype, target_name = mangle_result
-                    return CallMangleInfo(
-                            target_name=target_name,
-                            result_dtypes=(result_dtype,),
-                            arg_dtypes=None)
-
-                elif len(mangle_result) == 3:
-                    result_dtype, target_name, actual_arg_dtypes = mangle_result
-                    return CallMangleInfo(
-                            target_name=target_name,
-                            result_dtypes=(result_dtype,),
-                            arg_dtypes=actual_arg_dtypes)
-
-                else:
-                    raise ValueError("unexpected size of tuple returned by '%s'"
-                            % mangler.__name__)
-
-        return None
 
     # }}}
 
@@ -439,25 +446,25 @@ class LoopKernel(ImmutableRecordWithoutPickling):
 
     @memoize_method
     def non_iname_variable_names(self):
-        return (set(six.iterkeys(self.arg_dict))
-                | set(six.iterkeys(self.temporary_variables)))
+        return (set(self.arg_dict.keys())
+                | set(self.temporary_variables.keys()))
 
     @memoize_method
     def all_variable_names(self, include_temp_storage=True):
         return (
-                set(six.iterkeys(self.temporary_variables))
-                | set(tv.base_storage
-                    for tv in six.itervalues(self.temporary_variables)
-                    if tv.base_storage is not None and include_temp_storage)
-                | set(six.iterkeys(self.substitutions))
-                | set(arg.name for arg in self.args)
+                set(self.temporary_variables.keys())
+                | {tv.base_storage
+                    for tv in self.temporary_variables.values()
+                    if tv.base_storage is not None and include_temp_storage}
+                | set(self.substitutions.keys())
+                | {arg.name for arg in self.args}
                 | set(self.all_inames()))
 
     def get_var_name_generator(self):
         return _UniqueVarNameGenerator(self.all_variable_names())
 
     def get_instruction_id_generator(self, based_on="insn"):
-        used_ids = set(insn.id for insn in self.instructions)
+        used_ids = {insn.id for insn in self.instructions}
 
         return UniqueNameGenerator(used_ids)
 
@@ -466,7 +473,7 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         if insns is None:
             insns = self.instructions
 
-        used_ids = set(insn.id for insn in insns) | extra_used_ids
+        used_ids = {insn.id for insn in insns} | extra_used_ids
 
         for id_str in generate_unique_names(based_on):
             if id_str not in used_ids:
@@ -494,12 +501,27 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         except KeyError:
             pass
 
+        if name in self.all_inames():
+            from loopy import TemporaryVariable
+            return TemporaryVariable(
+                    name=name,
+                    dtype=self.index_dtype,
+                    shape=())
+
+        try:
+            dtype, name = self.mangle_symbol(self.target.get_device_ast_builder(),
+                    name)
+            from loopy import ValueArg
+            return ValueArg(name, dtype)
+        except TypeError:
+            pass
+
         raise ValueError("nothing known about variable '%s'" % name)
 
     @property
     @memoize_method
     def id_to_insn(self):
-        return dict((insn.id, insn) for insn in self.instructions)
+        return {insn.id: insn for insn in self.instructions}
 
     # }}}
 
@@ -594,10 +616,10 @@ class LoopKernel(ImmutableRecordWithoutPickling):
 
     @memoize_method
     def _get_home_domain_map(self):
-        return dict(
-                (iname, i_domain)
+        return {
+                iname: i_domain
                 for i_domain, dom in enumerate(self.domains)
-                for iname in dom.get_var_names(dim_type.set))
+                for iname in dom.get_var_names(dim_type.set)}
 
     def get_home_domain_index(self, iname):
         return self._get_home_domain_map()[iname]
@@ -707,8 +729,20 @@ class LoopKernel(ImmutableRecordWithoutPickling):
 
     # {{{ iname wrangling
 
+    @property
+    @memoize_method
+    def iname_to_tags(self):
+        warn(
+                "LoopKernel.iname_to_tags is deprecated. "
+                "Call LoopKernel.inames instead, "
+                "will be unsupported in 2022.",
+                DeprecationWarning, stacklevel=2)
+        return {name: iname.tags
+                for name, iname in self.inames.items()
+                if iname.tags}
+
     def iname_tags(self, iname):
-        return self.iname_to_tags.get(iname, frozenset())
+        return self.inames[iname].tags
 
     def iname_tags_of_type(self, iname, tag_type_or_types,
             max_num=None, min_num=None):
@@ -724,16 +758,15 @@ class LoopKernel(ImmutableRecordWithoutPickling):
 
         from loopy.kernel.data import filter_iname_tags_by_type
         return filter_iname_tags_by_type(
-                self.iname_to_tags.get(iname, frozenset()),
+                self.iname_tags(iname),
                 tag_type_or_types, max_num=max_num, min_num=min_num)
 
     @memoize_method
     def all_inames(self):
-        result = set()
-        for dom in self.domains:
-            result.update(
-                    intern(n) for n in dom.get_var_names(dim_type.set))
-        return frozenset(result)
+        """
+        Returns a :class:`frozenset` of the names of all the inames in the kernel.
+        """
+        return frozenset(self.inames.keys())
 
     @memoize_method
     def all_params(self):
@@ -773,7 +806,7 @@ class LoopKernel(ImmutableRecordWithoutPickling):
     @memoize_method
     def all_referenced_inames(self):
         result = set()
-        for inames in six.itervalues(self.all_insn_inames()):
+        for inames in self.all_insn_inames().values():
             result.update(inames)
         return result
 
@@ -784,10 +817,10 @@ class LoopKernel(ImmutableRecordWithoutPickling):
 
     @memoize_method
     def iname_to_insns(self):
-        result = dict(
-                (iname, set()) for iname in self.all_inames())
+        result = {
+                iname: set() for iname in self.all_inames()}
         for insn in self.instructions:
-            for iname in self.insn_inames(insn):
+            for iname in insn.within_inames:
                 result[iname].add(insn.id)
 
         return result
@@ -811,9 +844,9 @@ class LoopKernel(ImmutableRecordWithoutPickling):
                 tag, = tags
                 tag_key_uses[tag.key].append(iname)
 
-        multi_use_keys = set(
-                key for key, user_inames in six.iteritems(tag_key_uses)
-                if len(user_inames) > 1)
+        multi_use_keys = {
+                key for key, user_inames in tag_key_uses.items()
+                if len(user_inames) > 1}
 
         multi_use_inames = set()
         for iname in cond_inames:
@@ -824,24 +857,6 @@ class LoopKernel(ImmutableRecordWithoutPickling):
                     multi_use_inames.add(iname)
 
         return frozenset(cond_inames - multi_use_inames)
-
-    # {{{ compatibility wrapper for iname_to_tag.get("iname")
-
-    @property
-    def iname_to_tag(self):
-        from warnings import warn
-        warn("Since version 2018.1, inames can hold multiple tags. Use "
-             "iname_to_tags['iname'] instead. iname_to_tag.get('iname') will be "
-             "removed at version 2019.0.", DeprecationWarning)
-        for iname, tags in six.iteritems(self.iname_to_tags):
-            if len(tags) > 1:
-                raise LoopyError(
-                    "iname {0} has multiple tags: {1}. "
-                    "Use iname_to_tags['iname'] instead.".format(iname, tags))
-        return dict((k, next(iter(v)))
-                    for k, v in six.iteritems(self.iname_to_tags) if v)
-
-    # }}}
 
     # }}}
 
@@ -889,8 +904,8 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         result = {}
 
         admissible_vars = (
-                set(arg.name for arg in self.args)
-                | set(six.iterkeys(self.temporary_variables)))
+                {arg.name for arg in self.args}
+                | set(self.temporary_variables.keys()))
 
         for insn in self.instructions:
             for var_name in insn.read_dependency_names() & admissible_vars:
@@ -917,6 +932,10 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         result = set()
         for insn in self.instructions:
             result.update(insn.read_dependency_names())
+
+        for domain in self.domains:
+            result.update(domain.get_var_names(dim_type.param))
+
         return result
 
     @memoize_method
@@ -932,7 +951,7 @@ class LoopKernel(ImmutableRecordWithoutPickling):
     @memoize_method
     def get_temporary_to_base_storage_map(self):
         result = {}
-        for tv in six.itervalues(self.temporary_variables):
+        for tv in self.temporary_variables.values():
             if tv.base_storage:
                 result[tv.name] = tv.base_storage
 
@@ -943,10 +962,10 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         written_vars = self.get_written_variables()
 
         from loopy.kernel.data import ValueArg
-        return set(
+        return {
                 arg.name
                 for arg in self.args
-                if isinstance(arg, ValueArg) and arg.name not in written_vars)
+                if isinstance(arg, ValueArg) and arg.name not in written_vars}
 
     # }}}
 
@@ -955,7 +974,7 @@ class LoopKernel(ImmutableRecordWithoutPickling):
     @property
     @memoize_method
     def arg_dict(self):
-        return dict((arg.name, arg) for arg in self.args)
+        return {arg.name: arg for arg in self.args}
 
     @property
     @memoize_method
@@ -977,13 +996,14 @@ class LoopKernel(ImmutableRecordWithoutPickling):
 
         from loopy.kernel.data import ArrayArg
         return (
-                set(
+                {
                     arg.name for arg in self.args
-                    if isinstance(arg, ArrayArg))
-                | set(
+                    if (isinstance(arg, ArrayArg)
+                        and arg.address_space == AddressSpace.GLOBAL)}
+                | {
                     tv.name
-                    for tv in six.itervalues(self.temporary_variables)
-                    if tv.address_space == AddressSpace.GLOBAL))
+                    for tv in self.temporary_variables.values()
+                    if tv.address_space == AddressSpace.GLOBAL})
 
     # }}}
 
@@ -1038,24 +1058,11 @@ class LoopKernel(ImmutableRecordWithoutPickling):
     @memoize_method
     def get_grid_sizes_for_insn_ids_as_dicts(self, insn_ids,
             callables_table, ignore_auto=False):
-        """Return a tuple (global_size, local_size) containing a grid that
-        could accommodate execution of all instructions whose IDs are given
-        in *insn_ids*.
-
-        :arg insn_ids: a :class:`frozenset` of instruction IDs
-
-        *global_size* and *local_size* are instances of :class:`dict` with
-        mapping of the form from ``axis`` to :class:`islpy.PwAff` objects.
         """
-
-        # {{{ collecting the callee kernels in insn_ids
-
-        from loopy.kernel.tools import get_direct_callee_kernels
-        callee_kernels = get_direct_callee_kernels(self,
-                callables_table, insn_ids)
-
-        # }}}
-
+        Returns a tuple of (global_sizes, local_sizes), where global_sizes,
+        local_sizes are the grid sizes accommodating all of *insn_ids*. The grid
+        sizes are a dict from the axis index to the corresponding grid size.
+        """
         all_inames_by_insns = set()
         for insn_id in insn_ids:
             all_inames_by_insns |= self.insn_inames(insn_id)
@@ -1066,17 +1073,37 @@ class LoopKernel(ImmutableRecordWithoutPickling):
                     % (", ".join(sorted(all_inames_by_insns)),
                         ", ".join(sorted(self.all_inames()))))
 
+        # {{{ include grid constraints due to callees
+
         global_sizes = {}
         local_sizes = {}
 
-        # updating the grid sizes from the callee_kernels.
-        for callee_kernel in callee_kernels:
-            gsize, lsize = callee_kernel.get_grid_sizes_for_insn_ids_as_dicts(
-                    frozenset(insn.id for insn in callee_kernel.instructions),
-                    callables_table, ignore_auto)
+        from loopy.kernel.instruction import CallInstruction
+        from loopy.symbolic import ResolvedFunction
 
-            global_sizes.update(gsize)
-            local_sizes.update(lsize)
+        for insn in self.instructions:
+            # TODO: This might be unsafe as call-sites must be resolved to get
+            # any hardware axes size constraints they might impose. However,
+            # transforms like 'precompute' use this method and callables might
+            # not be resolved by then.
+            if (isinstance(insn, CallInstruction)
+                    and isinstance(insn.expression.function, ResolvedFunction)):
+
+                clbl = callables_table[insn.expression.function.name]
+                gsize, lsize = clbl.get_hw_axes_sizes(insn.arg_id_to_val(),
+                                                      self.assumptions.space,
+                                                      callables_table)
+
+                for tgt_dict, tgt_size in [(global_sizes, gsize),
+                                            (local_sizes, lsize)]:
+
+                    for iaxis, size in tgt_size.items():
+                        if iaxis in tgt_dict:
+                            tgt_dict[iaxis] = tgt_dict[iaxis].max(size)
+                        else:
+                            tgt_dict[iaxis] = size
+
+        # }}}
 
         from loopy.kernel.data import (
                 GroupIndexTag, LocalIndexTag,
@@ -1110,19 +1137,33 @@ class LoopKernel(ImmutableRecordWithoutPickling):
             from loopy.isl_helpers import static_max_of_pw_aff
             try:
                 # insist block size is constant
-                size = static_max_of_pw_aff(size,
+                size_as_aff = static_max_of_pw_aff(size,
                         constants_only=isinstance(tag, LocalIndexTag),
                         context=self.assumptions)
+                size = isl.PwAff.from_aff(size_as_aff)
             except StaticValueFindingError:
                 pass
 
             tgt_dict[tag.axis] = size
 
+        # {{{ override local_sizes with self.local_sizes
+
+        for i_lsize, lsize in self.local_sizes.items():
+            if i_lsize <= max(local_sizes.keys()):
+                local_sizes[i_lsize] = lsize
+            else:
+                from warnings import warn
+                warn(f"Forced local sizes '{i_lsize}: {lsize}' is unused"
+                     f" because kernel '{self.name}' uses {max(local_sizes.keys())}"
+                     " local hardware axes.")
+
+        # }}}
+
         return global_sizes, local_sizes
 
     @memoize_method
     def get_grid_sizes_for_insn_ids(self, insn_ids, callables_table,
-            ignore_auto=False):
+            ignore_auto=False, return_dict=False):
         """Return a tuple (global_size, local_size) containing a grid that
         could accommodate execution of all instructions whose IDs are given
         in *insn_ids*.
@@ -1133,32 +1174,30 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         """
 
         if self.overridden_get_grid_sizes_for_insn_ids:
-            return self.overridden_get_grid_sizes_for_insn_ids(
-                    insn_ids,
-                    callables_table=callables_table,
-                    ignore_auto=ignore_auto)
-
-        assert self.is_called_from_host, ("Callee kernels do not have sufficient "
-                "information to compute grid sizes.")
+            gsize, lsize = self.overridden_get_grid_sizes_for_insn_ids(
+                insn_ids,
+                callables_table=callables_table,
+                ignore_auto=ignore_auto)
+            if return_dict:
+                return dict(enumerate(gsize)), dict(enumerate(lsize))
+            else:
+                return gsize, lsize
 
         global_sizes, local_sizes = self.get_grid_sizes_for_insn_ids_as_dicts(
                 insn_ids, callables_table, ignore_auto=ignore_auto)
 
-        def to_dim_tuple(size_dict, which, forced_sizes={}):
-            forced_sizes = forced_sizes.copy()
+        if return_dict:
+            return global_sizes, local_sizes
 
+        def to_dim_tuple(size_dict, which):
             size_list = []
-            sorted_axes = sorted(six.iterkeys(size_dict))
+            sorted_axes = sorted(size_dict.keys())
 
-            while sorted_axes or forced_sizes:
+            while sorted_axes:
                 if sorted_axes:
                     cur_axis = sorted_axes.pop(0)
                 else:
                     cur_axis = None
-
-                if len(size_list) in forced_sizes:
-                    size_list.append(forced_sizes.pop(len(size_list)))
-                    continue
 
                 assert cur_axis is not None
 
@@ -1171,10 +1210,11 @@ class LoopKernel(ImmutableRecordWithoutPickling):
             return tuple(size_list)
 
         return (to_dim_tuple(global_sizes, "global"),
-                to_dim_tuple(local_sizes, "local", forced_sizes=self.local_sizes))
+                to_dim_tuple(local_sizes, "local"))
 
+    @memoize_method
     def get_grid_sizes_for_insn_ids_as_exprs(self, insn_ids,
-            callables_table, ignore_auto=False):
+            callables_table, ignore_auto=False, return_dict=False):
         """Return a tuple (global_size, local_size) containing a grid that
         could accommodate execution of all instructions whose IDs are given
         in *insn_ids*.
@@ -1185,7 +1225,15 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         """
 
         grid_size, group_size = self.get_grid_sizes_for_insn_ids(
-                insn_ids, callables_table, ignore_auto)
+                insn_ids, callables_table, ignore_auto, return_dict)
+
+        if return_dict:
+            def dict_to_exprs(d):
+                from loopy.symbolic import pw_aff_to_expr
+                return {k: pw_aff_to_expr(v, int_ok=True)
+                        for k, v in d.items()}
+
+            return dict_to_exprs(grid_size), dict_to_exprs(group_size)
 
         def tup_to_exprs(tup):
             from loopy.symbolic import pw_aff_to_expr
@@ -1193,7 +1241,8 @@ class LoopKernel(ImmutableRecordWithoutPickling):
 
         return tup_to_exprs(grid_size), tup_to_exprs(group_size)
 
-    def get_grid_size_upper_bounds(self, callables_table, ignore_auto=False):
+    def get_grid_size_upper_bounds(self, callables_table, ignore_auto=False,
+            return_dict=False):
         """Return a tuple (global_size, local_size) containing a grid that
         could accommodate execution of *all* instructions in the kernel.
 
@@ -1201,21 +1250,20 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         """
         return self.get_grid_sizes_for_insn_ids(
                 frozenset(insn.id for insn in self.instructions),
-                callables_table,
-                ignore_auto=ignore_auto)
+                callables_table, ignore_auto=ignore_auto,
+                return_dict=return_dict)
 
     def get_grid_size_upper_bounds_as_exprs(self, callables_table,
-            ignore_auto=False):
+            ignore_auto=False, return_dict=False):
         """Return a tuple (global_size, local_size) containing a grid that
         could accommodate execution of *all* instructions in the kernel.
 
         *global_size* and *local_size* are :mod:`pymbolic` expressions
         """
-
         return self.get_grid_sizes_for_insn_ids_as_exprs(
                 frozenset(insn.id for insn in self.instructions),
-                callables_table,
-                ignore_auto=ignore_auto)
+                callables_table, ignore_auto=ignore_auto,
+                return_dict=return_dict)
 
     # }}}
 
@@ -1224,15 +1272,15 @@ class LoopKernel(ImmutableRecordWithoutPickling):
     @memoize_method
     def local_var_names(self):
         from loopy.kernel.data import AddressSpace
-        return set(
+        return {
             tv.name
-            for tv in six.itervalues(self.temporary_variables)
-            if tv.address_space == AddressSpace.LOCAL)
+            for tv in self.temporary_variables.values()
+            if tv.address_space == AddressSpace.LOCAL}
 
     def local_mem_use(self):
         from loopy.kernel.data import AddressSpace
         return sum(
-                tv.nbytes for tv in six.itervalues(self.temporary_variables)
+                tv.nbytes for tv in self.temporary_variables.values()
                 if tv.address_space == AddressSpace.LOCAL)
 
     # }}}
@@ -1265,13 +1313,13 @@ class LoopKernel(ImmutableRecordWithoutPickling):
                 "consistent iname nesting order. This is a possible indication "
                 "that the kernel may not schedule successfully, but for now "
                 "it only impacts printing of the kernel.")
-            embedding = dict((iname, iname) for iname in self.all_inames())
+            embedding = {iname: iname for iname in self.all_inames()}
 
         return embedding
 
     def stringify(self, what=None, with_dependencies=False, use_separators=True,
             show_labels=True):
-        all_what = set([
+        all_what = {
             "name",
             "arguments",
             "domains",
@@ -1281,10 +1329,10 @@ class LoopKernel(ImmutableRecordWithoutPickling):
             "instructions",
             "Dependencies",
             "schedule",
-            ])
+            }
 
-        first_letter_to_what = dict(
-                (w[0], w) for w in all_what)
+        first_letter_to_what = {
+                w[0]: w for w in all_what}
         assert len(first_letter_to_what) == len(all_what)
 
         if what is None:
@@ -1295,11 +1343,11 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         if isinstance(what, str):
             if "," in what:
                 what = what.split(",")
-                what = set(s.strip() for s in what)
+                what = {s.strip() for s in what}
             else:
-                what = set(
+                what = {
                         first_letter_to_what[w]
-                        for w in what)
+                        for w in what}
 
         if not (what <= all_what):
             raise LoopyError("invalid 'what' passed: %s"
@@ -1344,14 +1392,14 @@ class LoopKernel(ImmutableRecordWithoutPickling):
                 else:
                     tags_str = ", ".join(str(tag) for tag in tags)
 
-                line = "%s: %s" % (iname, tags_str)
+                line = f"{iname}: {tags_str}"
                 lines.append(line)
 
         if "variables" in what and kernel.temporary_variables:
             lines.extend(sep)
             if show_labels:
                 lines.append("TEMPORARIES:")
-            for tv in natsorted(six.itervalues(kernel.temporary_variables),
+            for tv in natsorted(kernel.temporary_variables.values(),
                     key=lambda tv: tv.name):
                 lines.append(str(tv))
 
@@ -1359,7 +1407,7 @@ class LoopKernel(ImmutableRecordWithoutPickling):
             lines.extend(sep)
             if show_labels:
                 lines.append("SUBSTITUTION RULES:")
-            for rule_name in natsorted(six.iterkeys(kernel.substitutions)):
+            for rule_name in natsorted(kernel.substitutions.keys()):
                 lines.append(str(kernel.substitutions[rule_name]))
 
         if "instructions" in what:
@@ -1373,7 +1421,8 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         dep_lines = []
         for insn in kernel.instructions:
             if insn.depends_on:
-                dep_lines.append("%s : %s" % (insn.id, ",".join(insn.depends_on)))
+                dep_lines.append("{} : {}".format(
+                    insn.id, ",".join(insn.depends_on)))
 
         if "Dependencies" in what and dep_lines:
             lines.extend(sep)
@@ -1385,7 +1434,7 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         if "schedule" in what and kernel.schedule is not None:
             lines.extend(sep)
             if show_labels:
-                lines.append("SCHEDULE:")
+                lines.append("LINEARIZATION:")
             from loopy.schedule import dump_schedule
             lines.append(dump_schedule(kernel, kernel.schedule))
 
@@ -1394,23 +1443,60 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         return "\n".join(lines)
 
     def __str__(self):
-        if six.PY3:
-            return self.stringify()
-        else:
-            # Path of least resistance...
-            return self.stringify().encode("utf-8")
+        return self.stringify()
 
     def __unicode__(self):
         return self.stringify()
 
     # }}}
 
+    # {{{ implementation arguments
+
+    @property
+    @memoize_method
+    def impl_arg_to_arg(self):
+        from loopy.kernel.array import ArrayBase
+
+        result = {}
+
+        for arg in self.args:
+            if not isinstance(arg, ArrayBase):
+                result[arg.name] = arg
+                continue
+
+            if arg.shape is None or arg.dim_tags is None:
+                result[arg.name] = arg
+                continue
+
+            subscripts_and_names = arg.subscripts_and_names()
+            if subscripts_and_names is None:
+                result[arg.name] = arg
+                continue
+
+            for index, sub_arg_name in subscripts_and_names:
+                result[sub_arg_name] = arg
+
+        return result
+
+    # }}}
+
+    # {{{ handle linearization variable that doesn't yet exist
+
+    @property
+    def linearization(self):
+        return self.schedule
+
+    # }}}
+
     # {{{ direct execution
 
     def __call__(self, *args, **kwargs):
-        warn("Calling a LoopKernel is deprecated, call a Program "
+        """
+        Execute the :class:`LoopKernel`.
+        """
+        warn("Calling a LoopKernel is deprecated, call a TranslationUnit "
                 "instead.", DeprecationWarning, stacklevel=2)
-        from loopy.program import make_program
+        from loopy.translation_unit import make_program
         program = make_program(self)
         return program(*args, **kwargs)
 
@@ -1419,10 +1505,10 @@ class LoopKernel(ImmutableRecordWithoutPickling):
     # {{{ pickling
 
     def __getstate__(self):
-        result = dict(
-                (key, getattr(self, key))
+        result = {
+                key: getattr(self, key)
                 for key in self.__class__.fields
-                if hasattr(self, key))
+                if hasattr(self, key)}
 
         result.pop("cache_manager", None)
 
@@ -1453,7 +1539,7 @@ class LoopKernel(ImmutableRecordWithoutPickling):
 
         new_fields = set()
 
-        for k, v in six.iteritems(attribs):
+        for k, v in attribs.items():
             setattr(self, k, v)
             new_fields.add(k)
 
@@ -1487,14 +1573,13 @@ class LoopKernel(ImmutableRecordWithoutPickling):
             "assumptions",
             "local_sizes",
             "temporary_variables",
-            "iname_to_tags",
+            "inames",
             "substitutions",
             "iname_slab_increments",
             "loop_priority",
             "silenced_warnings",
             "options",
             "state",
-            "is_called_from_host",
             "target",
             )
 
@@ -1510,16 +1595,16 @@ class LoopKernel(ImmutableRecordWithoutPickling):
             # resolve hash conflicts.
 
             "preamble_generators",
-            "function_manglers",
             "symbol_manglers",
             )
 
     update_persistent_hash = update_persistent_hash
 
+    @memoize_method
     def __hash__(self):
         from loopy.tools import LoopyKeyBuilder
-        from hashlib import sha256
-        key_hash = sha256()
+        import hashlib
+        key_hash = hashlib.sha256()
         self.update_persistent_hash(key_hash, LoopyKeyBuilder())
         return hash(key_hash.digest())
 
@@ -1554,6 +1639,25 @@ class LoopKernel(ImmutableRecordWithoutPickling):
         return not self.__eq__(other)
 
     # }}}
+
+    def copy(self, **kwargs):
+        if "iname_to_tags" in kwargs:
+            if "inames" in kwargs:
+                raise LoopyError("Cannot pass both `inames` and `iname_to_tags` to "
+                        "LoopKernel.copy")
+
+            kwargs["inames"] = None
+
+        # Avoid carrying over an invalid cache when other parts of the kernel
+        # are modified.
+        kwargs["_cached_written_variables"] = None
+
+        from pytools.tag import normalize_tags, check_tag_uniqueness
+        tags = kwargs.pop("tags", _not_provided)
+        if tags is not _not_provided:
+            kwargs["tags"] = check_tag_uniqueness(normalize_tags(tags))
+
+        return super().copy(**kwargs)
 
 # }}}
 

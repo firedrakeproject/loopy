@@ -2,7 +2,7 @@ import numpy as np
 import loopy as lp
 import pyopencl as cl
 import pyopencl.array
-from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2
+from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa: F401
 
 # setup
 # -----
@@ -16,8 +16,7 @@ a = cl.array.arange(queue, n, dtype=np.float32)
 # ------
 knl = lp.make_kernel(
         "{ [i]: 0<=i<n }",
-        "out[i] = 2*a[i]",
-        target=lp.PyOpenCLTarget(ctx.devices[0]))
+        "out[i] = 2*a[i]")
 
 # transform
 # ---------

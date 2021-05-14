@@ -7,13 +7,13 @@ from loopy.transform.iname import remove_unused_inames
 class ScalarChanger(RuleAwareIdentityMapper):
     def __init__(self, rule_mapping_context, var_name):
         self.var_name = var_name
-        super(ScalarChanger, self).__init__(rule_mapping_context)
+        super().__init__(rule_mapping_context)
 
     def map_subscript(self, expr, expn_state):
         if expr.aggregate.name == self.var_name:
             return Variable(self.var_name)
 
-        return super(ScalarChanger, self).map_subscript(expr, expn_state)
+        return super().map_subscript(expr, expn_state)
 
 
 def make_scalar(kernel, var_name):
@@ -23,7 +23,7 @@ def make_scalar(kernel, var_name):
     kernel = ScalarChanger(rule_mapping_context, var_name).map_kernel(kernel)
 
     new_args = [ValueArg(arg.name, arg.dtype, target=arg.target,
-        is_output_only=arg.is_output_only) if arg.name == var_name else arg for
+        is_output=arg.is_output) if arg.name == var_name else arg for
         arg in kernel.args]
     new_temps = dict((tv.name, tv.copy(shape=(), dim_tags=None))
             if tv.name == var_name else (tv.name, tv) for tv in

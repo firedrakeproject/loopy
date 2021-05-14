@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import
-
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
 __license__ = """
@@ -23,20 +21,18 @@ THE SOFTWARE.
 """
 
 
-import six
-from six.moves import range, zip
-
 from loopy.symbolic import (
         TaggedVariable, Reduction, LinearSubscript, TypeCast)
 from loopy.diagnostic import LoopyError, LoopyWarning
-from loopy.program import iterate_over_kernels_if_given_program
+from loopy.translation_unit import for_each_kernel
 
 # {{{ imported user interface
 
 from loopy.kernel.instruction import (
+        LegacyStringInstructionTag, UseStreamingStoreTag,
         MemoryOrdering, memory_ordering,
         MemoryScope, memory_scope,
-        VarAtomicity, AtomicInit, AtomicUpdate,
+        VarAtomicity, OrderedAtomic, AtomicInit, AtomicUpdate,
         InstructionBase,
         MultiAssignmentBase, Assignment, ExpressionInstruction,
         CallInstruction, CInstruction, NoOpInstruction, BarrierInstruction)
@@ -50,8 +46,8 @@ from loopy.kernel.data import (
         CallMangleInfo)
 from loopy.kernel.function_interface import (
         CallableKernel, ScalarCallable)
-from loopy.program import (
-        Program, make_program)
+from loopy.translation_unit import (
+        TranslationUnit, Program,  make_program)
 
 from loopy.kernel import LoopKernel, KernelState, kernel_state
 from loopy.kernel.tools import (
@@ -79,7 +75,7 @@ from loopy.transform.iname import (
         affine_map_inames, find_unused_axis_tag,
         make_reduction_inames_unique,
         has_schedulable_iname_nesting, get_iname_duplication_options,
-        add_inames_to_insn)
+        add_inames_to_insn, add_inames_for_unused_hw_axes)
 
 from loopy.transform.instruction import (
         find_instructions, map_instructions,
@@ -116,25 +112,25 @@ from loopy.transform.padding import (
         add_padding)
 
 from loopy.transform.privatize import privatize_temporaries_with_inames
-from loopy.transform.batch import to_batched, save_temporaries_in_loop
+from loopy.transform.batch import to_batched
 from loopy.transform.parameter import assume, fix_parameters
 from loopy.transform.save import save_and_reload_temporaries
 from loopy.transform.add_barrier import add_barrier
-from loopy.transform.callable import (register_callable_kernel,
-        register_function_id_to_in_knl_callable_mapper, inline_callable_kernel)
+from loopy.transform.callable import (register_callable,
+        merge, inline_callable_kernel, rename_callable)
 from loopy.transform.pack_and_unpack_args import pack_and_unpack_args_for_call
 
 # }}}
 
 from loopy.type_inference import infer_unknown_types
 from loopy.preprocess import (preprocess_kernel, realize_reduction,
-        preprocess_program)
-from loopy.schedule import generate_loop_schedules, get_one_scheduled_kernel
-from loopy.statistics import (ToCountMap, CountGranularity, stringify_stats_mapping,
-        Op, MemAccess, get_op_poly, get_op_map, get_lmem_access_poly,
-        get_DRAM_access_poly, get_gmem_access_poly, get_mem_access_map,
-        get_synchronization_poly, get_synchronization_map,
-        gather_access_footprints, gather_access_footprint_bytes)
+        preprocess_program, infer_arg_descr)
+from loopy.schedule import (
+    generate_loop_schedules, get_one_scheduled_kernel, get_one_linearized_kernel)
+from loopy.statistics import (ToCountMap, ToCountPolynomialMap, CountGranularity,
+        stringify_stats_mapping, Op, MemAccess, get_op_map, get_mem_access_map,
+        get_synchronization_map, gather_access_footprints,
+        gather_access_footprint_bytes, Sync)
 from loopy.codegen import (
         PreambleInfo,
         generate_code, generate_code_v2, generate_body)
@@ -151,12 +147,11 @@ from loopy.target import TargetBase, ASTBuilderBase
 from loopy.target.c import CFamilyTarget, CTarget, ExecutableCTarget, generate_header
 from loopy.target.cuda import CudaTarget
 from loopy.target.opencl import OpenCLTarget
-from loopy.target.pyopencl import PyOpenCLTarget, NvidiaPyOpenCLTarget
+from loopy.target.pyopencl import PyOpenCLTarget
 from loopy.target.ispc import ISPCTarget
 from loopy.target.numba import NumbaTarget, NumbaCudaTarget
 
 from loopy.tools import Optional
-from loopy.tools import dump_as_python
 
 
 __all__ = [
@@ -167,11 +162,12 @@ __all__ = [
         "LoopKernel",
         "KernelState", "kernel_state",  # lower case is deprecated
 
+        "LegacyStringInstructionTag", "UseStreamingStoreTag",
         "MemoryOrdering", "memory_ordering",  # lower case is deprecated
         "MemoryScope", "memory_scope",  # lower case is deprecated
 
         "VarAtomicity",
-        "AtomicInit", "AtomicUpdate",
+        "OrderedAtomic", "AtomicInit", "AtomicUpdate",
         "InstructionBase",
         "MultiAssignmentBase", "Assignment", "ExpressionInstruction",
         "CallInstruction", "CInstruction", "NoOpInstruction",
@@ -179,7 +175,7 @@ __all__ = [
 
         "ScalarCallable", "CallableKernel",
 
-        "Program", "make_program",
+        "TranslationUnit", "make_program", "Program",
 
         "KernelArgument",
         "ValueArg", "ArrayArg", "GlobalArg", "ConstantArg", "ImageArg",
@@ -204,7 +200,7 @@ __all__ = [
         "affine_map_inames", "find_unused_axis_tag",
         "make_reduction_inames_unique",
         "has_schedulable_iname_nesting", "get_iname_duplication_options",
-        "add_inames_to_insn",
+        "add_inames_to_insn", "add_inames_for_unused_hw_axes",
 
         "add_prefetch", "change_arg_to_image",
         "tag_array_axes", "tag_data_axes",
@@ -233,7 +229,7 @@ __all__ = [
 
         "privatize_temporaries_with_inames",
 
-        "to_batched", "save_temporaries_in_loop",
+        "to_batched",
 
         "assume", "fix_parameters",
 
@@ -241,11 +237,10 @@ __all__ = [
 
         "add_barrier",
 
-        "dump_as_python",
+        "register_callable",
+        "merge",
 
-        "register_callable_kernel",
-        "register_function_id_to_in_knl_callable_mapper",
-        "inline_callable_kernel",
+        "inline_callable_kernel", "rename_callable",
 
         "pack_and_unpack_args_for_call",
 
@@ -265,16 +260,19 @@ __all__ = [
         "infer_unknown_types",
 
         "preprocess_kernel", "realize_reduction", "preprocess_program",
-        "generate_loop_schedules", "get_one_scheduled_kernel",
+        "infer_arg_descr",
+
+        "generate_loop_schedules",
+        "get_one_scheduled_kernel", "get_one_linearized_kernel",
         "GeneratedProgram", "CodeGenerationResult",
         "PreambleInfo",
         "generate_code", "generate_code_v2", "generate_body",
 
-        "ToCountMap", "CountGranularity", "stringify_stats_mapping", "Op",
-        "MemAccess", "get_op_poly", "get_op_map", "get_lmem_access_poly",
-        "get_DRAM_access_poly", "get_gmem_access_poly", "get_mem_access_map",
-        "get_synchronization_poly", "get_synchronization_map",
+        "ToCountMap", "ToCountPolynomialMap", "CountGranularity",
+        "stringify_stats_mapping", "Op", "MemAccess", "get_op_map",
+        "get_mem_access_map", "get_synchronization_map",
         "gather_access_footprints", "gather_access_footprint_bytes",
+        "Sync",
 
         "CompiledKernel",
 
@@ -290,7 +288,7 @@ __all__ = [
         "TargetBase",
         "CFamilyTarget", "CTarget", "ExecutableCTarget", "generate_header",
         "CudaTarget", "OpenCLTarget",
-        "PyOpenCLTarget", "NvidiaPyOpenCLTarget", "ISPCTarget",
+        "PyOpenCLTarget", "ISPCTarget",
         "NumbaTarget", "NumbaCudaTarget",
         "ASTBuilderBase",
 
@@ -300,11 +298,11 @@ __all__ = [
 
         "register_preamble_generators",
         "register_symbol_manglers",
-        "register_function_manglers",
 
         "set_caching_enabled",
         "CacheMode",
         "make_copy_kernel",
+        "make_einsum",
 
         # }}}
         ]
@@ -314,7 +312,7 @@ __all__ = [
 
 # {{{ set_options
 
-@iterate_over_kernels_if_given_program
+@for_each_kernel
 def set_options(kernel, *args, **kwargs):
     """Return a new kernel with the options given as keyword arguments, or from
     a string representation passed in as the first (and only) positional
@@ -333,7 +331,7 @@ def set_options(kernel, *args, **kwargs):
         from loopy.options import _apply_legacy_map, Options
         kwargs = _apply_legacy_map(Options._legacy_options_map, kwargs)
 
-        for key, val in six.iteritems(kwargs):
+        for key, val in kwargs.items():
             if not hasattr(new_opt, key):
                 raise ValueError("unknown option '%s'" % key)
 
@@ -354,7 +352,7 @@ def set_options(kernel, *args, **kwargs):
 
 # {{{ library registration
 
-@iterate_over_kernels_if_given_program
+@for_each_kernel
 def register_preamble_generators(kernel, preamble_generators):
     """
     :arg manglers: list of functions of signature ``(preamble_info)``
@@ -379,7 +377,7 @@ def register_preamble_generators(kernel, preamble_generators):
     return kernel.copy(preamble_generators=new_pgens)
 
 
-@iterate_over_kernels_if_given_program
+@for_each_kernel
 def register_symbol_manglers(kernel, manglers):
     from loopy.tools import unpickles_equally
 
@@ -395,29 +393,6 @@ def register_symbol_manglers(kernel, manglers):
             new_manglers.insert(0, m)
 
     return kernel.copy(symbol_manglers=new_manglers)
-
-
-@iterate_over_kernels_if_given_program
-def register_function_manglers(kernel, manglers):
-    """
-    :arg manglers: list of functions of signature ``(kernel, name, arg_dtypes)``
-        returning a :class:`loopy.CallMangleInfo`.
-    :returns: *kernel* with *manglers* registered
-    """
-    from loopy.tools import unpickles_equally
-
-    new_manglers = kernel.function_manglers[:]
-    for m in manglers:
-        if m not in new_manglers:
-            if not unpickles_equally(m):
-                raise LoopyError("mangler '%s' does not "
-                        "compare equally after being upickled "
-                        "and would disrupt loopy's caches"
-                        % m)
-
-            new_manglers.insert(0, m)
-
-    return kernel.copy(function_manglers=new_manglers)
 
 # }}}
 
@@ -439,7 +414,7 @@ def set_caching_enabled(flag):
     CACHING_ENABLED = flag
 
 
-class CacheMode(object):
+class CacheMode:
     """A context manager for setting whether :mod:`loopy` is allowed to use
     disk caches.
     """
@@ -463,7 +438,7 @@ class CacheMode(object):
 # {{{ make copy kernel
 
 def make_copy_kernel(new_dim_tags, old_dim_tags=None):
-    """Returns a :class:`loopy.Program` that changes the data layout
+    """Returns a :class:`loopy.TranslationUnit` that changes the data layout
     of a variable (called "input") to the new layout specified by
     *new_dim_tags* from the one specified by *old_dim_tags*.
     *old_dim_tags* defaults to an all-C layout of the same rank
@@ -486,16 +461,17 @@ def make_copy_kernel(new_dim_tags, old_dim_tags=None):
     shape = ["n%d" % i for i in range(rank)]
     commad_indices = ", ".join(indices)
     bounds = " and ".join(
-            "0<=%s<%s" % (ind, shape_i)
+            f"0<={ind}<{shape_i}"
             for ind, shape_i in zip(indices, shape))
 
-    set_str = "{[%s]: %s}" % (
+    set_str = "{{[{}]: {} }}".format(
                 commad_indices,
                 bounds
                 )
     result = make_kernel(set_str,
             "output[%s] = input[%s]"
-            % (commad_indices, commad_indices))
+            % (commad_indices, commad_indices),
+            lang_version=MOST_RECENT_LANGUAGE_VERSION)
 
     result = tag_array_axes(result, "input", old_dim_tags)
     result = tag_array_axes(result, "output", new_dim_tags)
@@ -507,6 +483,78 @@ def make_copy_kernel(new_dim_tags, old_dim_tags=None):
             result = tag_inames(result, {indices[i]: "unr"})
 
     return result
+
+# }}}
+
+
+# {{{ einsum
+
+def make_einsum(spec, arg_names, **knl_creation_kwargs):
+    r"""Returns a :class:`LoopKernel` for evaluating array-based
+    operations using Einstein summation convention.
+
+    :param spec: a string denoting the subscripts for
+        summation as a comma-separated list of subscript labels.
+        This follows the usual :func:`numpy.einsum` convention.
+        Note that the explicit indicator `->` for the precise output
+        form is required.
+    :param arg_names: a sequence of string types denoting
+        the names of the array operands.
+    :param \**knl_creation_kwargs: keyword arguments for kernel creation.
+        See :func:`make_kernel` for a list of acceptable keyword
+        parameters.
+
+    .. note::
+
+        No attempt is being made to reduce the complexity
+        of the resulting expression. This should be dealt with
+        as part of a separate transformation.
+    """
+    arg_spec, out_spec = spec.split("->")
+    arg_specs = arg_spec.split(",")
+
+    if len(arg_names) != len(arg_specs):
+        raise ValueError(
+            f"Number of arg names ({arg_names}) should match the number "
+            f"of arg specs: {arg_specs}. Length of arg names is {len(arg_names)}; "
+            f"expecting {len(arg_specs)} arg names."
+        )
+
+    out_indices = set(out_spec)
+    if len(out_indices) != len(out_spec):
+        raise ValueError(
+            f"Output subscripts '{out_spec}' does not contain all unique indices."
+        )
+
+    all_indices = {
+        idx
+        for argsp in arg_specs
+        for idx in argsp} | out_indices
+
+    sum_indices = all_indices - out_indices
+
+    from pymbolic import var
+    lhs = var("out")[tuple(var(i) for i in out_spec)]
+
+    rhs = 1
+    for arg_name, argsp in zip(arg_names, arg_specs):
+        rhs = rhs * var(arg_name)[tuple(var(i) for i in argsp)]
+
+    if sum_indices:
+        rhs = Reduction("sum", tuple(var(idx) for idx in sum_indices), rhs)
+
+    constraints = " and ".join(
+        "0 <= %s < N%s" % (idx, idx)
+        for idx in all_indices
+        )
+
+    if "name" not in knl_creation_kwargs:
+        knl_creation_kwargs["name"] = "einsum%dto%d_kernel" % (
+                len(all_indices), len(out_indices))
+
+    return make_kernel("{[%s]: %s}" % (",".join(all_indices), constraints),
+                       [Assignment(lhs, rhs)],
+                       **knl_creation_kwargs)
 
 # }}}
 

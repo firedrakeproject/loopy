@@ -1,6 +1,5 @@
 """OpenCL target independent of PyOpenCL."""
 
-from __future__ import division, absolute_import
 
 __copyright__ = "Copyright (C) 2015 Andreas Kloeckner"
 
@@ -29,7 +28,7 @@ import numpy as np
 from loopy.target.c import CFamilyTarget, CFamilyASTBuilder
 from loopy.target.c.codegen.expression import ExpressionToCExpressionMapper
 from pytools import memoize_method
-from loopy.diagnostic import LoopyError
+from loopy.diagnostic import LoopyError, LoopyTypeError
 from loopy.types import NumpyType
 from loopy.target.c import DTypeRegistryWrapper
 from loopy.kernel.data import AddressSpace
@@ -40,16 +39,32 @@ from pymbolic import var
 # {{{ dtype registry wrappers
 
 
+class DTypeRegistryWrapperWithInt8ForBool(DTypeRegistryWrapper):
+    """
+    A DType registry that uses int8 for bool8 types.
+
+    .. note::
+
+        This sub-class is needed because compyte's type registry does
+        not support type aliases.
+    """
+    def dtype_to_ctype(self, dtype):
+        from loopy.types import NumpyType
+        if isinstance(dtype, NumpyType) and dtype.dtype == np.bool8:
+            return self.wrapped_registry.dtype_to_ctype(
+                    NumpyType(np.int8, dtype.target))
+        return self.wrapped_registry.dtype_to_ctype(dtype)
+
+
 class DTypeRegistryWrapperWithAtomics(DTypeRegistryWrapper):
     def get_or_register_dtype(self, names, dtype=None):
         if dtype is not None:
             from loopy.types import AtomicNumpyType, NumpyType
             if isinstance(dtype, AtomicNumpyType):
-                return super(self.wrapped_registry.get_or_register_dtype(
-                        names, NumpyType(dtype.dtype)))
+                return self.wrapped_registry.get_or_register_dtype(
+                        names, NumpyType(dtype.dtype))
 
-        return super(DTypeRegistryWrapperWithAtomics, self).get_or_register_dtype(
-                names, dtype)
+        return self.wrapped_registry.get_or_register_dtype(names, dtype)
 
 
 class DTypeRegistryWrapperWithCL1Atomics(DTypeRegistryWrapperWithAtomics):
@@ -59,8 +74,7 @@ class DTypeRegistryWrapperWithCL1Atomics(DTypeRegistryWrapperWithAtomics):
         if isinstance(dtype, AtomicNumpyType):
             return "volatile " + self.wrapped_registry.dtype_to_ctype(dtype)
         else:
-            return super(DTypeRegistryWrapperWithCL1Atomics, self).dtype_to_ctype(
-                    dtype)
+            return self.wrapped_registry.dtype_to_ctype(dtype)
 
 # }}}
 
@@ -81,16 +95,16 @@ def _create_vector_types():
     counts = [2, 3, 4, 8, 16]
 
     for base_name, base_type in [
-            ('char', np.int8),
-            ('uchar', np.uint8),
-            ('short', np.int16),
-            ('ushort', np.uint16),
-            ('int', np.int32),
-            ('uint', np.uint32),
-            ('long', np.int64),
-            ('ulong', np.uint64),
-            ('float', np.float32),
-            ('double', np.float64),
+            ("char", np.int8),
+            ("uchar", np.uint8),
+            ("short", np.int16),
+            ("ushort", np.uint16),
+            ("int", np.int32),
+            ("uint", np.uint32),
+            ("long", np.int64),
+            ("ulong", np.uint64),
+            ("float", np.float32),
+            ("double", np.float64),
             ]:
         for count in counts:
             name = "%s%d" % (base_name, count)
@@ -148,22 +162,22 @@ _CL_SIMPLE_MULTI_ARG_FUNCTIONS = {
         }
 
 
-VECTOR_LITERAL_FUNCS = dict(
-        ("make_%s%d" % (name, count), (name, dtype, count))
+VECTOR_LITERAL_FUNCS = {
+        "make_%s%d" % (name, count): (name, dtype, count)
         for name, dtype in [
-            ('char', np.int8),
-            ('uchar', np.uint8),
-            ('short', np.int16),
-            ('ushort', np.uint16),
-            ('int', np.int32),
-            ('uint', np.uint32),
-            ('long', np.int64),
-            ('ulong', np.uint64),
-            ('float', np.float32),
-            ('double', np.float64),
+            ("char", np.int8),
+            ("uchar", np.uint8),
+            ("short", np.int16),
+            ("ushort", np.uint16),
+            ("int", np.int32),
+            ("uint", np.uint32),
+            ("long", np.int64),
+            ("ulong", np.uint64),
+            ("float", np.float32),
+            ("double", np.float64),
             ]
         for count in [2, 3, 4, 8, 16]
-        )
+        }
 
 
 class OpenCLCallable(ScalarCallable):
@@ -172,10 +186,71 @@ class OpenCLCallable(ScalarCallable):
     :class:`loopy.target.c.CMathCallable`.
     """
 
-    def with_types(self, arg_id_to_dtype, caller_kernel, callables_table):
+    def with_types(self, arg_id_to_dtype, callables_table):
         name = self.name
 
-        if name in ["max", "min"]:
+        # unary functions
+        if name in ["fabs", "acos", "asin", "atan", "cos", "cosh", "sin", "sinh",
+                    "tan", "tanh", "exp", "log", "log10", "sqrt", "ceil", "floor",
+                    "erf", "erfc"]:
+
+            for id in arg_id_to_dtype:
+                if not -1 <= id <= 0:
+                    raise LoopyError(f"'{name}' can take only one argument.")
+
+            if 0 not in arg_id_to_dtype or arg_id_to_dtype[0] is None:
+                # the types provided aren't mature enough to specialize the
+                # callable
+                return (
+                        self.copy(arg_id_to_dtype=arg_id_to_dtype),
+                        callables_table)
+
+            dtype = arg_id_to_dtype[0]
+            dtype = dtype.numpy_dtype
+
+            if dtype.kind in ("u", "i"):
+                # ints and unsigned casted to float32
+                dtype = np.float32
+            elif dtype.kind == "c":
+                raise LoopyTypeError(f"{name} does not support type {dtype}")
+
+            return (
+                    self.copy(name_in_target=name,
+                        arg_id_to_dtype={0: NumpyType(dtype), -1:
+                            NumpyType(dtype)}),
+                    callables_table)
+        # binary functions
+        elif name in ["fmax", "fmin", "atan2", "copysign"]:
+
+            for id in arg_id_to_dtype:
+                if not -1 <= id <= 1:
+                    #FIXME: Do we need to raise here?:
+                    #   The pattern we generally follow is that if we don't find
+                    #   a function, then we just return None
+                    raise LoopyError("%s can take only two arguments." % name)
+
+            if 0 not in arg_id_to_dtype or 1 not in arg_id_to_dtype or (
+                    arg_id_to_dtype[0] is None or arg_id_to_dtype[1] is None):
+                # the types provided aren't mature enough to specialize the
+                # callable
+                return (
+                        self.copy(arg_id_to_dtype=arg_id_to_dtype),
+                        callables_table)
+
+            dtype = np.find_common_type(
+                [], [dtype.numpy_dtype for id, dtype in arg_id_to_dtype.items()
+                     if id >= 0])
+
+            if dtype.kind == "c":
+                raise LoopyTypeError("%s does not support complex numbers")
+
+            dtype = NumpyType(dtype)
+            return (
+                    self.copy(name_in_target=name,
+                        arg_id_to_dtype={-1: dtype, 0: dtype, 1: dtype}),
+                    callables_table)
+
+        elif name in ["max", "min"]:
             for id in arg_id_to_dtype:
                 if not -1 <= id <= 1:
                     raise LoopyError("%s can take only 2 arguments." % name)
@@ -183,14 +258,15 @@ class OpenCLCallable(ScalarCallable):
                 return (
                         self.copy(arg_id_to_dtype=arg_id_to_dtype),
                         callables_table)
-            dtype = np.find_common_type(
+            common_dtype = np.find_common_type(
                     [], [dtype.numpy_dtype for id, dtype in arg_id_to_dtype.items()
                         if (id >= 0 and dtype is not None)])
 
-            if dtype.kind in ['u', 'i', 'f']:
-                if dtype.kind == 'f':
-                    name = 'f'+name
-                dtype = NumpyType(dtype)
+            if common_dtype.kind in ["u", "i", "f"]:
+                if common_dtype.kind == "f":
+                    name = "f"+name
+
+                dtype = NumpyType(common_dtype)
                 return (
                         self.copy(name_in_target=name,
                             arg_id_to_dtype={-1: dtype, 0: dtype, 1: dtype}),
@@ -198,12 +274,12 @@ class OpenCLCallable(ScalarCallable):
             else:
                 # Unsupported type.
                 raise LoopyError("%s function not supported for the types %s" %
-                        (name, dtype))
+                        (name, common_dtype))
 
-        if name == "dot":
+        elif name == "dot":
             for id in arg_id_to_dtype:
                 if not -1 <= id <= 1:
-                    raise LoopyError("%s can take only 2 arguments." % name)
+                    raise LoopyError(f"'{name}' can take only 2 arguments.")
 
             if 0 not in arg_id_to_dtype or 1 not in arg_id_to_dtype or (
                     arg_id_to_dtype[0] is None or arg_id_to_dtype[1] is None):
@@ -220,7 +296,31 @@ class OpenCLCallable(ScalarCallable):
                         NumpyType(scalar_dtype), 0: dtype, 1: dtype}),
                     callables_table)
 
-        if name in _CL_SIMPLE_MULTI_ARG_FUNCTIONS:
+        elif name == "pow":
+            for id in arg_id_to_dtype:
+                if not -1 <= id <= 1:
+                    raise LoopyError(f"'{name}' can take only 2 arguments.")
+
+            common_dtype = np.find_common_type(
+                    [], [dtype.numpy_dtype for id, dtype in arg_id_to_dtype.items()
+                        if (id >= 0 and dtype is not None)])
+
+            if common_dtype == np.float64:
+                name = "powf64"
+            elif common_dtype == np.float32:
+                name = "powf32"
+            else:
+                raise LoopyTypeError(f"'pow' does not support type {dtype}.")
+
+            result_dtype = NumpyType(common_dtype)
+
+            return (
+                    self.copy(name_in_target=name,
+                              arg_id_to_dtype={-1: result_dtype,
+                                               0: common_dtype, 1: common_dtype}),
+                    callables_table)
+
+        elif name in _CL_SIMPLE_MULTI_ARG_FUNCTIONS:
             num_args = _CL_SIMPLE_MULTI_ARG_FUNCTIONS[name]
             for id in arg_id_to_dtype:
                 if not -1 <= id < num_args:
@@ -243,15 +343,15 @@ class OpenCLCallable(ScalarCallable):
                 raise LoopyError("%s does not support complex numbers"
                         % name)
 
-            updated_arg_id_to_dtype = dict((id, NumpyType(dtype)) for id in range(-1,
-                num_args))
+            updated_arg_id_to_dtype = {id: NumpyType(dtype) for id in range(-1,
+                num_args)}
 
             return (
                     self.copy(name_in_target=name,
                         arg_id_to_dtype=updated_arg_id_to_dtype),
                     callables_table)
 
-        if name in VECTOR_LITERAL_FUNCS:
+        elif name in VECTOR_LITERAL_FUNCS:
             base_tp_name, dtype, count = VECTOR_LITERAL_FUNCS[name]
 
             for id in arg_id_to_dtype:
@@ -267,8 +367,8 @@ class OpenCLCallable(ScalarCallable):
                             self.copy(arg_id_to_dtype=arg_id_to_dtype),
                             callables_table)
 
-            updated_arg_id_to_dtype = dict((id, NumpyType(dtype)) for id in
-                    range(count))
+            updated_arg_id_to_dtype = {id: NumpyType(dtype) for id in
+                    range(count)}
             updated_arg_id_to_dtype[-1] = OpenCLTarget().vector_dtype(
                         NumpyType(dtype), count)
 
@@ -284,18 +384,21 @@ class OpenCLCallable(ScalarCallable):
                 callables_table)
 
 
-def scope_opencl_functions(target, identifier):
+def get_opencl_callables():
     """
     Returns an instance of :class:`InKernelCallable` if the function defined by
     *identifier* is known in OpenCL.
     """
-    opencl_function_ids = set(["max", "min", "dot"]) | set(
-            _CL_SIMPLE_MULTI_ARG_FUNCTIONS) | set(VECTOR_LITERAL_FUNCS)
+    opencl_function_ids = (
+            {"max", "min", "dot", "pow", "abs", "acos", "asin",
+            "atan", "cos", "cosh", "sin", "sinh", "pow", "atan2", "tanh", "exp",
+            "log", "log10", "sqrt", "ceil", "floor", "max", "min", "fmax", "fmin",
+            "fabs", "tan", "erf", "erfc"}
+            | set(_CL_SIMPLE_MULTI_ARG_FUNCTIONS)
+            | set(VECTOR_LITERAL_FUNCS))
 
-    if identifier in opencl_function_ids:
-        return OpenCLCallable(name=identifier)
-
-    return None
+    return {id_: OpenCLCallable(name=id_) for id_ in
+        opencl_function_ids}
 
 # }}}
 
@@ -319,6 +422,8 @@ def opencl_symbol_mangler(kernel, name):
         return NumpyType(np.dtype(np.int32)), name
     elif name.startswith("LONG_"):
         return NumpyType(np.dtype(np.int64)), name
+    elif name == "HUGE_VAL":
+        return NumpyType(np.dtype(np.float64)), name
     else:
         return None
 
@@ -363,179 +468,25 @@ def opencl_preamble_generator(preamble_info):
                 """ % dict(idx_ctype=kernel.target.dtype_to_typename(
                     kernel.index_dtype))))
 
+    for func in preamble_info.seen_functions:
+        if func.name == "pow" and func.c_name == "powf32":
+            yield("08_clpowf32", """
+            inline float powf32(float x, float y) {
+              return pow(x, y);
+            }""")
+
+        if func.name == "pow" and func.c_name == "powf64":
+            yield("08_clpowf64", """
+            inline double powf64(double x, double y) {
+              return pow(x, y);
+            }""")
+
 # }}}
 
 
 # {{{ expression mapper
 
 class ExpressionToOpenCLCExpressionMapper(ExpressionToCExpressionMapper):
-    def __init__(self, codegen_state, fortran_abi=False, type_inf_mapper=None):
-        super().__init__(codegen_state, fortran_abi=False, type_inf_mapper=None)
-
-        self.allow_complex = codegen_state.allow_complex
-        
-    complex_types = {np.complex64: "cfloat",
-                     np.complex128: "cdouble"}
-
-    def wrap_in_typecast(self, actual_type, needed_dtype, s):
-        if (actual_type.is_complex() and needed_dtype.is_complex()
-                and actual_type != needed_dtype):
-            return var("%s_cast" % self.complex_type_name(needed_dtype))(s)
-        elif not actual_type.is_complex() and needed_dtype.is_complex():
-            return var("%s_fromreal" % self.complex_type_name(needed_dtype))(s)
-        else:
-            return s
-
-    def map_sum(self, expr, type_context):
-        def base_impl(expr, type_context):
-            return super(ExpressionToCExpressionMapper, self).map_sum(
-                    expr, type_context)
-
-        # I've added 'type_context == "i"' because of the following
-        # idiotic corner case: Code generation for subscripts comes
-        # through here, and it may involve variables that we know
-        # nothing about (offsets and such). If we fall into the allow_complex
-        # branch, we'll try to do type inference on these variables,
-        # and stuff breaks. This band-aid works around that. -AK
-        if not self.allow_complex or type_context == "i":
-            return base_impl(expr, type_context)
-
-        tgt_dtype = self.infer_type(expr)
-        is_complex = tgt_dtype.is_complex()
-
-        if not is_complex:
-            return base_impl(expr, type_context)
-        else:
-            tgt_name = self.complex_type_name(tgt_dtype)
-
-            reals = []
-            complexes = []
-            for child in expr.children:
-                if self.infer_type(child).is_complex():
-                    complexes.append(child)
-                else:
-                    reals.append(child)
-
-            real_sum = p.flattened_sum([self.rec(r, type_context) for r in reals])
-
-            c_applied = [self.rec(c, type_context, tgt_dtype) for c in complexes]
-
-            def binary_tree_add(start, end):
-                if start + 1 == end:
-                    return c_applied[start]
-                mid = (start + end)//2
-                lsum = binary_tree_add(start, mid)
-                rsum = binary_tree_add(mid, end)
-                return var("%s_add" % tgt_name)(lsum, rsum)
-
-            complex_sum = binary_tree_add(0, len(c_applied))
-
-            if real_sum:
-                return var("%s_radd" % tgt_name)(real_sum, complex_sum)
-            else:
-                return complex_sum
-
-    def map_product(self, expr, type_context):
-        def base_impl(expr, type_context):
-            return super(ExpressionToCExpressionMapper, self).map_product(
-                    expr, type_context)
-
-        # I've added 'type_context == "i"' because of the following
-        # idiotic corner case: Code generation for subscripts comes
-        # through here, and it may involve variables that we know
-        # nothing about (offsets and such). If we fall into the allow_complex
-        # branch, we'll try to do type inference on these variables,
-        # and stuff breaks. This band-aid works around that. -AK
-        if not self.allow_complex or type_context == "i":
-            return base_impl(expr, type_context)
-
-        tgt_dtype = self.infer_type(expr)
-        is_complex = tgt_dtype.is_complex()
-
-        if not is_complex:
-            return base_impl(expr, type_context)
-        else:
-            tgt_name = self.complex_type_name(tgt_dtype)
-
-            reals = []
-            complexes = []
-            for child in expr.children:
-                if self.infer_type(child).is_complex():
-                    complexes.append(child)
-                else:
-                    reals.append(child)
-
-            real_prd = p.flattened_product(
-                    [self.rec(r, type_context) for r in reals])
-
-            c_applied = [self.rec(c, type_context, tgt_dtype) for c in complexes]
-
-            def binary_tree_mul(start, end):
-                if start + 1 == end:
-                    return c_applied[start]
-                mid = (start + end)//2
-                lsum = binary_tree_mul(start, mid)
-                rsum = binary_tree_mul(mid, end)
-                return var("%s_mul" % tgt_name)(lsum, rsum)
-
-            complex_prd = binary_tree_mul(0, len(complexes))
-
-            if real_prd:
-                return var("%s_rmul" % tgt_name)(real_prd, complex_prd)
-            else:
-                return complex_prd
-
-    def map_quotient(self, expr, type_context):
-
-        n_complex = 'c' == n_dtype.kind
-        d_complex = 'c' == d_dtype.kind
-
-        if not (self.allow_complex and (n_complex or d_complex)):
-            return super().map_quotent(expr, type_context)
-
-        n_dtype = self.infer_type(expr.numerator).numpy_dtype
-        d_dtype = self.infer_type(expr.denominator).numpy_dtype
-        tgt_dtype = self.infer_type(expr)
-
-        if n_complex and not d_complex:
-            return var("%s_divider" % self.complex_type_name(tgt_dtype))(
-                self.rec(expr.numerator, type_context, tgt_dtype),
-                self.rec(expr.denominator, type_context))
-        elif not n_complex and d_complex:
-            return var("%s_rdivide" % self.complex_type_name(tgt_dtype))(
-                self.rec(expr.numerator, type_context),
-                self.rec(expr.denominator, type_context, tgt_dtype))
-        else:
-            return var("%s_divide" % self.complex_type_name(tgt_dtype))(
-                self.rec(expr.numerator, type_context, tgt_dtype),
-                self.rec(expr.denominator, type_context, tgt_dtype))
-
-    def map_power(self, expr, type_context):
-        if not self.allow_complex:
-            return super().map_power(expr, type_context)
-
-        tgt_dtype = self.infer_type(expr)
-        if tgt_dtype.is_complex():
-            if expr.exponent in [2, 3, 4]:
-                value = expr.base
-                for i in range(expr.exponent-1):
-                    value = value * expr.base
-                return self.rec(value, type_context)
-            else:
-                b_complex = self.infer_type(expr.base).is_complex()
-                e_complex = self.infer_type(expr.exponent).is_complex()
-
-                if b_complex and not e_complex:
-                    return var("%s_powr" % self.complex_type_name(tgt_dtype))(
-                            self.rec(expr.base, type_context, tgt_dtype),
-                            self.rec(expr.exponent, type_context))
-                else:
-                    return var("%s_pow" % self.complex_type_name(tgt_dtype))(
-                            self.rec(expr.base, type_context, tgt_dtype),
-                            self.rec(expr.exponent, type_context, tgt_dtype))
-
-        return base_impl(expr, type_context)
-
     def map_group_hw_index(self, expr, type_context):
         return var("gid")(expr.axis)
 
@@ -551,14 +502,17 @@ class OpenCLTarget(CFamilyTarget):
     """A target for the OpenCL C heterogeneous compute programming language.
     """
 
-    def __init__(self, atomics_flavor=None):
+    def __init__(self, atomics_flavor=None, use_int8_for_bool=True):
         """
         :arg atomics_flavor: one of ``"cl1"`` (C11-style atomics from OpenCL 2.0),
             ``"cl1"`` (OpenCL 1.1 atomics, using bit-for-bit compare-and-swap
             for floating point), ``"cl1-exch"`` (OpenCL 1.1 atomics, using
             double-exchange for floating point--not yet supported).
+        :arg use_int8_for_bool: Size of *bool* is undefined as per
+            OpenCL spec, if *True* all bool8 variables would be treated
+            as int8's.
         """
-        super(OpenCLTarget, self).__init__()
+        super().__init__()
 
         if atomics_flavor is None:
             atomics_flavor = "cl1"
@@ -567,6 +521,7 @@ class OpenCLTarget(CFamilyTarget):
             raise ValueError("unsupported atomics flavor: %s" % atomics_flavor)
 
         self.atomics_flavor = atomics_flavor
+        self.use_int8_for_bool = use_int8_for_bool
 
     def split_kernel_at_global_barriers(self):
         return True
@@ -587,9 +542,14 @@ class OpenCLTarget(CFamilyTarget):
         _register_vector_types(result)
 
         if self.atomics_flavor == "cl1":
-            return DTypeRegistryWrapperWithCL1Atomics(result)
+            result = DTypeRegistryWrapperWithCL1Atomics(result)
         else:
             raise NotImplementedError("atomics flavor: %s" % self.atomics_flavor)
+
+        if self.use_int8_for_bool:
+            result = DTypeRegistryWrapperWithInt8ForBool(result)
+
+        return result
 
     def is_vector_dtype(self, dtype):
         return (isinstance(dtype, NumpyType)
@@ -608,21 +568,22 @@ class OpenCLTarget(CFamilyTarget):
 class OpenCLCASTBuilder(CFamilyASTBuilder):
     # {{{ library
 
-    def function_id_in_knl_callable_mapper(self):
-        return (
-                [scope_opencl_functions] + super(
-                    OpenCLCASTBuilder, self).function_id_in_knl_callable_mapper())
+    @property
+    def known_callables(self):
+        callables = super().known_callables
+        callables.update(get_opencl_callables())
+        return callables
 
     def symbol_manglers(self):
         return (
-                super(OpenCLCASTBuilder, self).symbol_manglers() + [
+                super().symbol_manglers() + [
                     opencl_symbol_mangler
                     ])
 
     def preamble_generators(self):
 
         return (
-                super(OpenCLCASTBuilder, self).preamble_generators() + [
+                super().preamble_generators() + [
                     opencl_preamble_generator])
 
     # }}}
@@ -631,12 +592,12 @@ class OpenCLCASTBuilder(CFamilyASTBuilder):
 
     def get_function_declaration(self, codegen_state, codegen_result,
             schedule_index):
-        fdecl = super(OpenCLCASTBuilder, self).get_function_declaration(
+        fdecl = super().get_function_declaration(
                 codegen_state, codegen_result, schedule_index)
 
         from loopy.target.c import FunctionDeclarationWrapper
         assert isinstance(fdecl, FunctionDeclarationWrapper)
-        if not codegen_state.kernel.is_called_from_host:
+        if not codegen_state.is_entrypoint:
             # auxiliary kernels need not mention opencl speicific qualifiers
             # for a functions signature
             return fdecl
@@ -696,7 +657,7 @@ class OpenCLCASTBuilder(CFamilyASTBuilder):
             mem_kind = mem_kind.upper()
 
             from cgen import Statement
-            return Statement("barrier(CLK_%s_MEM_FENCE)%s" % (mem_kind, comment))
+            return Statement(f"barrier(CLK_{mem_kind}_MEM_FENCE){comment}")
         elif synchronization_kind == "global":
             raise LoopyError("OpenCL does not have global barriers")
         else:
@@ -721,13 +682,13 @@ class OpenCLCASTBuilder(CFamilyASTBuilder):
         from loopy.kernel.data import AddressSpace
 
         if mem_address_space == AddressSpace.LOCAL:
-            return CLLocal(super(OpenCLCASTBuilder, self).get_array_arg_decl(
+            return CLLocal(super().get_array_arg_decl(
                 name, mem_address_space, shape, dtype, is_written))
         elif mem_address_space == AddressSpace.PRIVATE:
-            return super(OpenCLCASTBuilder, self).get_array_arg_decl(
+            return super().get_array_arg_decl(
                 name, mem_address_space, shape, dtype, is_written)
         elif mem_address_space == AddressSpace.GLOBAL:
-            return CLGlobal(super(OpenCLCASTBuilder, self).get_array_arg_decl(
+            return CLGlobal(super().get_array_arg_decl(
                 name, mem_address_space, shape, dtype, is_written))
         else:
             raise ValueError("unexpected array argument scope: %s"
@@ -794,8 +755,10 @@ class OpenCLCASTBuilder(CFamilyASTBuilder):
             from loopy.kernel.data import TemporaryVariable, AddressSpace
             ecm = codegen_state.expression_to_code_mapper.with_assignments(
                     {
-                        old_val_var: TemporaryVariable(old_val_var, lhs_dtype),
-                        new_val_var: TemporaryVariable(new_val_var, lhs_dtype),
+                        old_val_var: TemporaryVariable(old_val_var, lhs_dtype,
+                            shape=()),
+                        new_val_var: TemporaryVariable(new_val_var, lhs_dtype,
+                            shape=()),
                         })
 
             lhs_expr_code = ecm(lhs_expr, prec=PREC_NONE, type_context=None)
@@ -855,7 +818,7 @@ class OpenCLCASTBuilder(CFamilyASTBuilder):
 
                 old_val = "*(%s *) &" % ctype + old_val
                 new_val = "*(%s *) &" % ctype + new_val
-                cast_str = "(%s %s *) " % (var_kind, ctype)
+                cast_str = f"({var_kind} {ctype} *) "
 
             return Block([
                 POD(self, NumpyType(lhs_dtype.dtype, target=self.target),

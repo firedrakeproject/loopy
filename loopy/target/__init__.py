@@ -1,6 +1,5 @@
 """Base target interface."""
 
-from __future__ import division, absolute_import
 
 __copyright__ = "Copyright (C) 2015 Andreas Kloeckner"
 
@@ -30,7 +29,6 @@ __doc__ = """
 
 .. autoclass:: TargetBase
 .. autoclass:: ASTBuilderBase
-
 .. autoclass:: CFamilyTarget
 .. autoclass:: CTarget
 .. autoclass:: ExecutableCTarget
@@ -41,10 +39,18 @@ __doc__ = """
 .. autoclass:: NumbaTarget
 .. autoclass:: NumbaCudaTarget
 
+References to Canonical Names
+-----------------------------
+
+.. currentmodule:: loopy.target
+
+.. class:: TargetBase
+
+    See :class:`loopy.TargetBase`.
 """
 
 
-class TargetBase(object):
+class TargetBase:
     """Base class for all targets, i.e. different combinations of code that
     loopy can generate.
 
@@ -81,7 +87,10 @@ class TargetBase(object):
     def preprocess(self, kernel):
         return kernel
 
-    def pre_codegen_check(self, kernel, callables_table):
+    def pre_codegen_entrypoint_check(self, kernel, callables_table):
+        pass
+
+    def pre_codegen_callable_check(self, kernel, callables_table):
         pass
 
     # }}}
@@ -142,7 +151,7 @@ class TargetBase(object):
         raise NotImplementedError()
 
 
-class ASTBuilderBase(object):
+class ASTBuilderBase:
     """An interface for generating (host or device) ASTs.
     """
 
@@ -151,13 +160,15 @@ class ASTBuilderBase(object):
 
     # {{{ library
 
-    def function_id_in_knl_callable_mapper(self):
+    @property
+    def known_callables(self):
         """
-        Returns an instance of list of the functions of signature
-        ``(target, identifiers)`` returning either an instance of
-        :class:`InKernelCallable` if a match is found or *None*.
+        Returns a mapping from function ids to corresponding
+        :class:`loopy.kernel.function_interface.InKernelCallable` for the
+        function ids known to *self.target*.
         """
-        return []
+        # FIXME: @inducer: Do we need to move this to TargetBase?
+        return {}
 
     def symbol_manglers(self):
         return []
@@ -168,6 +179,10 @@ class ASTBuilderBase(object):
     # }}}
 
     # {{{ code generation guts
+
+    @property
+    def ast_module(self):
+        raise NotImplementedError()
 
     def get_function_definition(self, codegen_state, codegen_result,
             schedule_index, function_decl, function_body):
@@ -249,14 +264,14 @@ class ASTBuilderBase(object):
 
 # {{{ dummy host ast builder
 
-class _DummyExpressionToCodeMapper(object):
+class _DummyExpressionToCodeMapper:
     def rec(self, expr, prec, type_context=None, needed_dtype=None):
         return ""
 
     __call__ = rec
 
 
-class _DummyASTBlock(object):
+class _DummyASTBlock:
     def __init__(self, arg):
         self.contents = []
 

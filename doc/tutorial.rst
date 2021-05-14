@@ -179,11 +179,11 @@ for good measure.
     >>> assert (out.get() == (2*x_vec_dev).get()).all()
 
 We can have loopy print the OpenCL kernel it generated
-by passing :attr:`loopy.Options.write_cl`.
+by passing :attr:`loopy.Options.write_code`.
 
 .. doctest::
 
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> evt, (out,) = knl(queue, a=x_vec_dev)
     #define lid(N) ((int) get_local_id(N))
     #define gid(N) ((int) get_group_id(N))
@@ -227,7 +227,7 @@ inspect that code, too, using :attr:`loopy.Options.write_wrapper`:
 
 .. doctest::
 
-    >>> knl = lp.set_options(knl, write_wrapper=True, write_cl=False)
+    >>> knl = lp.set_options(knl, write_wrapper=True, write_code=False)
     >>> evt, (out,) = knl(queue, a=x_vec_host)
     from __future__ import division
     ...
@@ -246,18 +246,26 @@ inspect that code, too, using :attr:`loopy.Options.write_wrapper`:
         # }}}
     ...
 
+You can also pass options to the OpenCL implementation
+by passing :attr:`loopy.Options.build_options`.
+
+.. doctest::
+
+    >>> knl = lp.set_options(knl, build_options=["-cl-mad-enable"])
+
+
 Generating code
 ~~~~~~~~~~~~~~~
 
 Instead of using loopy to run the code it generates, you can also just use
 loopy as a code generator and take care of executing the generated kernels
 yourself. In this case, make sure loopy knows about all types, and then
-call :func:`loopy.generate_code`:
+call :func:`loopy.generate_code_v2`:
 
 .. doctest::
 
     >>> typed_knl = lp.add_dtypes(knl, dict(a=np.float32))
-    >>> code, _ = lp.generate_code(typed_knl)
+    >>> code = lp.generate_code_v2(typed_knl).device_code()
     >>> print(code)
     #define lid(N) ((int) get_local_id(N))
     #define gid(N) ((int) get_group_id(N))
@@ -325,7 +333,7 @@ an explicit dependency:
     ...     """
     ...     out[j,i] = a[i,j] {id=transpose}
     ...     out[i,j] = 2*out[i,j]  {dep=transpose}
-    ...     """)
+    ...     """, name="transpose_and_dbl")
 
 ``{id=transpose}`` assigns the identifier *transpose* to the first
 instruction, and ``{dep=transpose}`` declares a dependency of the second
@@ -334,9 +342,9 @@ that these dependencies show up there, too:
 
 .. doctest::
 
-    >>> print(knl.root_kernel.stringify(with_dependencies=True))
+    >>> print(knl["transpose_and_dbl"].stringify(with_dependencies=True))
     ---------------------------------------------------------------------------
-    KERNEL: loopy_kernel
+    KERNEL: transpose_and_dbl
     ---------------------------------------------------------------------------
     ...
     ---------------------------------------------------------------------------
@@ -355,7 +363,7 @@ loopy can also show an instruction dependency graph, using
 
 Dependencies are shown as arrows from prerequisite to dependent in the
 graph.  This functionality requires the open-source `graphviz
-<http://graphviz.org>`_ graph drawing tools to be installed. The generated
+<https://graphviz.org>`_ graph drawing tools to be installed. The generated
 graph will open in a browser window.
 
 Since manually notating lots of dependencies is cumbersome, loopy has
@@ -380,13 +388,13 @@ Let us take a look at the generated code for the above kernel:
 
 .. doctest::
 
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> knl = lp.prioritize_loops(knl, "i,j")
     >>> evt, (out,) = knl(queue, a=a_mat_dev)
     #define lid(N) ((int) get_local_id(N))
     #define gid(N) ((int) get_group_id(N))
     <BLANKLINE>
-    __kernel void __attribute__ ((reqd_work_group_size(1, 1, 1))) loopy_kernel(__global float const *__restrict__ a, int const n, __global float *__restrict__ out)
+    __kernel void __attribute__ ((reqd_work_group_size(1, 1, 1))) transpose_and_dbl(__global float const *__restrict__ a, int const n, __global float *__restrict__ out)
     {
       for (int i = 0; i <= -1 + n; ++i)
         for (int j = 0; j <= -1 + n; ++j)
@@ -430,7 +438,7 @@ Now the intended code is generated and our test passes.
 
 .. doctest::
 
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> evt, (out,) = knl(queue, a=a_mat_dev)
     #define lid(N) ((int) get_local_id(N))
     #define gid(N) ((int) get_group_id(N))
@@ -485,7 +493,7 @@ ambiguous.
 
 .. doctest::
 
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> evt, (out,) = knl(queue, a=a_mat_dev)
     #define lid(N) ((int) get_local_id(N))
     ...
@@ -523,7 +531,7 @@ is overwritten with the new kernel::
     knl = lp.do_something(knl, arguments...)
 
 We've already seen an example of a transformation above:
-For instance, :func:`prioritize_loops` fit the pattern.
+For instance, :func:`loopy.prioritize_loops` fit the pattern.
 
 :func:`loopy.split_iname` is another fundamental (and useful) transformation. It
 turns one existing iname (recall that this is loopy's word for a 'loop
@@ -543,7 +551,7 @@ Consider this example:
     ...     "a[i] = 0", assumptions="n>=1")
     >>> knl = lp.split_iname(knl, "i", 16)
     >>> knl = lp.prioritize_loops(knl, "i_outer,i_inner")
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> evt, (out,) = knl(queue, a=x_vec_dev)
     #define lid(N) ((int) get_local_id(N))
     ...
@@ -574,7 +582,7 @@ relation to loop nesting. For example, it's perfectly possible to request
     ...     "a[i] = 0", assumptions="n>=1")
     >>> knl = lp.split_iname(knl, "i", 16)
     >>> knl = lp.prioritize_loops(knl, "i_inner,i_outer")
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> evt, (out,) = knl(queue, a=x_vec_dev)
     #define lid(N) ((int) get_local_id(N))
     ...
@@ -599,7 +607,7 @@ commonly called 'loop tiling':
     >>> knl = lp.split_iname(knl, "i", 16)
     >>> knl = lp.split_iname(knl, "j", 16)
     >>> knl = lp.prioritize_loops(knl, "i_outer,j_outer,i_inner")
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> evt, (out,) = knl(queue, a=a_mat_dev)
     #define lid(N) ((int) get_local_id(N))
     ...
@@ -641,7 +649,7 @@ loop's tag to ``"unr"``:
     >>> knl = lp.split_iname(knl, "i", 4)
     >>> knl = lp.tag_inames(knl, dict(i_inner="unr"))
     >>> knl = lp.prioritize_loops(knl, "i_outer,i_inner")
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> evt, (out,) = knl(queue, a=x_vec_dev)
     #define lid(N) ((int) get_local_id(N))
     #define gid(N) ((int) get_group_id(N))
@@ -716,7 +724,7 @@ Let's try this out on our vector fill kernel by creating workgroups of size
     ...     "a[i] = 0", assumptions="n>=0")
     >>> knl = lp.split_iname(knl, "i", 128,
     ...         outer_tag="g.0", inner_tag="l.0")
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> evt, (out,) = knl(queue, a=x_vec_dev)
     #define lid(N) ((int) get_local_id(N))
     ...
@@ -735,7 +743,7 @@ those for us:
 
 .. doctest::
 
-    >>> glob, loc = knl.get_grid_size_upper_bounds()
+    >>> glob, loc = knl["loopy_kernel"].get_grid_size_upper_bounds(knl.callables_table)
     >>> print(glob)
     (Aff("[n] -> { [(floor((127 + n)/128))] }"),)
     >>> print(loc)
@@ -762,7 +770,7 @@ assumption:
     >>> knl = lp.split_iname(knl, "i", 4)
     >>> knl = lp.tag_inames(knl, dict(i_inner="unr"))
     >>> knl = lp.prioritize_loops(knl, "i_outer,i_inner")
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> evt, (out,) = knl(queue, a=x_vec_dev)
     #define lid(N) ((int) get_local_id(N))
     ...
@@ -781,7 +789,7 @@ assumption:
 While these conditionals enable the generated code to deal with arbitrary
 *n*, they come at a performance cost. Loopy allows generating separate code
 for the last iteration of the *i_outer* loop, by using the *slabs* keyword
-argument to :func:`split_iname`. Since this last iteration of *i_outer* is
+argument to :func:`loopy.split_iname`. Since this last iteration of *i_outer* is
 the only iteration for which ``i_inner + 4*i_outer`` can become larger than
 *n*, only the (now separate) code for that iteration contains conditionals,
 enabling some cost savings:
@@ -790,7 +798,7 @@ enabling some cost savings:
 
     >>> knl = orig_knl
     >>> knl = lp.split_iname(knl, "i", 4, slabs=(0, 1), inner_tag="unr")
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> knl = lp.prioritize_loops(knl, "i_outer,i_inner")
     >>> evt, (out,) = knl(queue, a=x_vec_dev)
     #define lid(N) ((int) get_local_id(N))
@@ -886,7 +894,7 @@ memory, local to each work item.
 
 .. doctest::
 
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> evt, (out1, out2) = knl(queue, a=x_vec_dev)
     #define lid(N) ((int) get_local_id(N))
     ...
@@ -947,7 +955,7 @@ Consider the following example:
     ...     """)
     >>> knl = lp.tag_inames(knl, dict(i_outer="g.0", i_inner="l.0"))
     >>> knl = lp.set_temporary_scope(knl, "a_temp", "local")
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> evt, (out,) = knl(queue, a=x_vec_dev)
     #define lid(N) ((int) get_local_id(N))
     ...
@@ -1012,7 +1020,7 @@ transformation exists in :func:`loopy.add_prefetch`:
     ...     out[16*i_outer + i_inner] = sum(k, a[16*i_outer + i_inner])
     ...     """)
     >>> knl = lp.tag_inames(knl, dict(i_outer="g.0", i_inner="l.0"))
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> knl_pf = lp.add_prefetch(knl, "a")
     >>> evt, (out,) = knl_pf(queue, a=x_vec_dev)
     #define lid(N) ((int) get_local_id(N))
@@ -1110,7 +1118,7 @@ work item:
 * *Local barriers* ensure consistency of memory accesses to items within
   *the same* work group. This synchronizes with all instructions in the work
   group.  The type of memory (local or global) may be specified by the
-  :attr:`loopy.instruction.BarrierInstruction.mem_kind`
+  :attr:`loopy.BarrierInstruction.mem_kind`
 
 * *Global barriers* ensure consistency of memory accesses
   across *all* work groups, i.e. it synchronizes with every work item
@@ -1157,7 +1165,7 @@ this, :mod:`loopy` will complain that global barrier needs to be inserted:
    >>> cgr = lp.generate_code_v2(knl)
    Traceback (most recent call last):
    ...
-   loopy.diagnostic.MissingBarrierError: Dependency 'rotate depends on maketmp' (for variable 'arr') requires synchronization by a global barrier (add a 'no_sync_with' instruction option to state that no synchronization is needed)
+   loopy.diagnostic.MissingBarrierError: rotate_v1: Dependency 'rotate depends on maketmp' (for variable 'arr') requires synchronization by a global barrier (add a 'no_sync_with' instruction option to state that no synchronization is needed)
 
 The syntax for a inserting a global barrier instruction is
 ``... gbarrier``. :mod:`loopy` also supports manually inserting local
@@ -1204,18 +1212,18 @@ Here is what happens when we try to generate code for the kernel:
 
 This happens due to the kernel splitting done by :mod:`loopy`. The splitting
 happens when the instruction schedule is generated. To see the schedule, we
-should call :func:`loopy.get_one_scheduled_kernel`:
+should call :func:`loopy.get_one_linearized_kernel`:
 
    >>> prog = lp.preprocess_kernel(prog)
-   >>> knl = lp.get_one_scheduled_kernel(prog.root_kernel, prog.callables_table)
-   >>> prog = prog.with_root_kernel(knl)
+   >>> knl = lp.get_one_linearized_kernel(prog["rotate_v2"], prog.callables_table)
+   >>> prog = prog.with_kernel(knl)
    >>> print(prog)
    ---------------------------------------------------------------------------
    KERNEL: rotate_v2
    ---------------------------------------------------------------------------
    ...
    ---------------------------------------------------------------------------
-   SCHEDULE:
+   LINEARIZATION:
       0: CALL KERNEL rotate_v2(extra_args=[], extra_inames=[])
       1:     tmp = arr[i_inner + i_outer*16]  {id=maketmp}
       2: RETURN FROM KERNEL rotate_v2
@@ -1235,12 +1243,12 @@ goes for local temporaries).
 :func:`loopy.save_and_reload_temporaries` for the purpose of handling the
 task of saving and restoring temporary values across global barriers. This
 function adds instructions to the kernel without scheduling them. That means
-that :func:`loopy.get_one_scheduled_kernel` needs to be called one more time to
+that :func:`loopy.get_one_linearized_kernel` needs to be called one more time to
 put those instructions into the schedule.
 
    >>> prog = lp.save_and_reload_temporaries(prog)
-   >>> knl = lp.get_one_scheduled_kernel(prog.root_kernel, prog.callables_table)  # Schedule added instructions
-   >>> prog = prog.with_root_kernel(knl)
+   >>> knl = lp.get_one_linearized_kernel(prog["rotate_v2"], prog.callables_table)  # Schedule added instructions
+   >>> prog = prog.with_kernel(knl)
    >>> print(prog)
    ---------------------------------------------------------------------------
    KERNEL: rotate_v2
@@ -1253,7 +1261,7 @@ put those instructions into the schedule.
    ---------------------------------------------------------------------------
    ...
    ---------------------------------------------------------------------------
-   SCHEDULE:
+   LINEARIZATION:
       0: CALL KERNEL rotate_v2(extra_args=['tmp_save_slot'], extra_inames=[])
       1:     tmp = arr[i_inner + i_outer*16]  {id=maketmp}
       2:     tmp_save_slot[tmp_save_hw_dim_0_rotate_v2, tmp_save_hw_dim_1_rotate_v2] = tmp  {id=tmp.save}
@@ -1306,7 +1314,7 @@ Now we can execute the kernel.
    >>> arr = cl.array.arange(queue, 16, dtype=np.int32)
    >>> print(arr)
    [ 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15]
-   >>> evt, (out,) = knl(queue, arr=arr)
+   >>> evt, (out,) = prog(queue, arr=arr)
    >>> print(arr)
    [15  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14]
 
@@ -1360,7 +1368,7 @@ a loopy kernel by simply calling them, e.g.::
 Additionally, all functions of one variable are currently recognized during
 code-generation however additional implementation may be required for custom
 functions.  The full lists of available functions may be found in a the
-:class:`TargetBase` implementation (e.g. :class:`CudaTarget`)
+:class:`loopy.TargetBase` implementation (e.g. :class:`loopy.CudaTarget`)
 
 Custom user functions may be represented using the method described in :ref:`functions`
 
@@ -1470,7 +1478,7 @@ When we ask to see the code, the issue becomes apparent:
 
 .. doctest::
 
-    >>> knl = lp.set_options(knl, "write_cl")
+    >>> knl = lp.set_options(knl, "write_code")
     >>> from warnings import catch_warnings
     >>> with catch_warnings():
     ...     filterwarnings("always", category=lp.LoopyWarning)
@@ -1543,7 +1551,7 @@ containing different types of data:
     ...     """
     ...     c[i, j, k] = a[i,j,k]*b[i,j,k]/3.0+a[i,j,k]
     ...     e[i, k] = g[i,k]*(2+h[i,k+1])
-    ...     """)
+    ...     """, name="stats_knl")
     >>> knl = lp.add_and_infer_dtypes(knl,
     ...     dict(a=np.float32, b=np.float32, g=np.float64, h=np.float64))
 
@@ -1554,7 +1562,7 @@ information provided. Now we will count the operations:
 
     >>> op_map = lp.get_op_map(knl, subgroup_size=32)
     >>> print(lp.stringify_stats_mapping(op_map))
-    Op(np:dtype('float32'), add, subgroup) : ...
+    Op(np:dtype('float32'), add, subgroup, stats_knl) : ...
 
 Each line of output will look roughly like::
 
@@ -1568,24 +1576,24 @@ number of operations matching the characteristics of the :class:`loopy.Op`
 specified in the key (in terms of the :class:`loopy.LoopKernel`
 *inames*). :class:`loopy.Op` attributes include:
 
-- dtype: A :class:`loopy.LoopyType` or :class:`numpy.dtype` that specifies the
+- dtype: A :class:`loopy.types.LoopyType` or :class:`numpy.dtype` that specifies the
   data type operated on.
 
 - name: A :class:`str` that specifies the kind of arithmetic operation as
   *add*, *sub*, *mul*, *div*, *pow*, *shift*, *bw* (bitwise), etc.
 
-One way to evaluate these polynomials is with :func:`islpy.eval_with_dict`:
+One way to evaluate these polynomials is with :meth:`islpy.PwQPolynomial.eval_with_dict`:
 
 .. doctest::
 
     >>> param_dict = {'n': 256, 'm': 256, 'l': 8}
     >>> from loopy.statistics import CountGranularity as CG
-    >>> f32add = op_map[lp.Op(np.float32, 'add', CG.SUBGROUP)].eval_with_dict(param_dict)
-    >>> f32div = op_map[lp.Op(np.float32, 'div', CG.SUBGROUP)].eval_with_dict(param_dict)
-    >>> f32mul = op_map[lp.Op(np.float32, 'mul', CG.SUBGROUP)].eval_with_dict(param_dict)
-    >>> f64add = op_map[lp.Op(np.float64, 'add', CG.SUBGROUP)].eval_with_dict(param_dict)
-    >>> f64mul = op_map[lp.Op(np.float64, 'mul', CG.SUBGROUP)].eval_with_dict(param_dict)
-    >>> i32add = op_map[lp.Op(np.int32, 'add', CG.SUBGROUP)].eval_with_dict(param_dict)
+    >>> f32add = op_map[lp.Op(np.float32, 'add', CG.SUBGROUP, "stats_knl")].eval_with_dict(param_dict)
+    >>> f32div = op_map[lp.Op(np.float32, 'div', CG.SUBGROUP, "stats_knl")].eval_with_dict(param_dict)
+    >>> f32mul = op_map[lp.Op(np.float32, 'mul', CG.SUBGROUP, "stats_knl")].eval_with_dict(param_dict)
+    >>> f64add = op_map[lp.Op(np.float64, 'add', CG.SUBGROUP, "stats_knl")].eval_with_dict(param_dict)
+    >>> f64mul = op_map[lp.Op(np.float64, 'mul', CG.SUBGROUP, "stats_knl")].eval_with_dict(param_dict)
+    >>> i32add = op_map[lp.Op(np.int32, 'add', CG.SUBGROUP, "stats_knl")].eval_with_dict(param_dict)
     >>> print("%i\n%i\n%i\n%i\n%i\n%i" %
     ...     (f32add, f32div, f32mul, f64add, f64mul, i32add))
     524288
@@ -1599,7 +1607,7 @@ One way to evaluate these polynomials is with :func:`islpy.eval_with_dict`:
 grouping, and evaluating subsets of the counts. Suppose we want to know the
 total number of 32-bit operations of any kind. We can easily count these
 using functions :func:`loopy.ToCountMap.filter_by` and
-:func:`loopy.ToCountMap.eval_and_sum`:
+:func:`loopy.ToCountPolynomialMap.eval_and_sum`:
 
 .. doctest::
 
@@ -1642,15 +1650,15 @@ we'll continue using the kernel from the previous example:
 
     >>> mem_map = lp.get_mem_access_map(knl, subgroup_size=32)
     >>> print(lp.stringify_stats_mapping(mem_map))
-    MemAccess(global, np:dtype('float32'), {}, {}, load, a, None, subgroup) : ...
+    MemAccess(global, np:dtype('float32'), {}, {}, load, a, None, subgroup, stats_knl) : ...
     <BLANKLINE>
 
 Each line of output will look roughly like::
 
 
-    MemAccess(global, np:dtype('float32'), {}, {}, load, a, None, subgroup) : [m, l, n] -> { 2 * m * l * n : m > 0 and l > 0 and n > 0 }
-    MemAccess(global, np:dtype('float32'), {}, {}, load, b, None, subgroup) : [m, l, n] -> { m * l * n : m > 0 and l > 0 and n > 0 }
-    MemAccess(global, np:dtype('float32'), {}, {}, store, c, None, subgroup) : [m, l, n] -> { m * l * n : m > 0 and l > 0 and n > 0 }
+    MemAccess(global, np:dtype('float32'), {}, {}, load, a, None, subgroup, stats_knl) : [m, l, n] -> { 2 * m * l * n : m > 0 and l > 0 and n > 0 }
+    MemAccess(global, np:dtype('float32'), {}, {}, load, b, None, subgroup, stats_knl) : [m, l, n] -> { m * l * n : m > 0 and l > 0 and n > 0 }
+    MemAccess(global, np:dtype('float32'), {}, {}, store, c, None, subgroup, stats_knl) : [m, l, n] -> { m * l * n : m > 0 and l > 0 and n > 0 }
 
 :func:`loopy.get_mem_access_map` returns a :class:`loopy.ToCountMap` of **{**
 :class:`loopy.MemAccess` **:** :class:`islpy.PwQPolynomial` **}**.
@@ -1659,7 +1667,7 @@ Each line of output will look roughly like::
 - mtype: A :class:`str` that specifies the memory type accessed as **global**
   or **local**
 
-- dtype: A :class:`loopy.LoopyType` or :class:`numpy.dtype` that specifies the
+- dtype: A :class:`loopy.types.LoopyType` or :class:`numpy.dtype` that specifies the
   data type accessed.
 
 - lid_strides: A :class:`dict` of **{** :class:`int` **:**
@@ -1681,17 +1689,17 @@ Each line of output will look roughly like::
 - variable: A :class:`str` that specifies the variable name of the data
   accessed.
 
-We can evaluate these polynomials using :func:`islpy.eval_with_dict`:
+We can evaluate these polynomials using :meth:`islpy.PwQPolynomial.eval_with_dict`:
 
 .. doctest::
 
-    >>> f64ld_g = mem_map[lp.MemAccess('global', np.float64, {}, {}, 'load', 'g', None, CG.SUBGROUP)
+    >>> f64ld_g = mem_map[lp.MemAccess('global', np.float64, {}, {}, 'load', 'g', None, CG.SUBGROUP, "stats_knl")
     ...                  ].eval_with_dict(param_dict)
-    >>> f64st_e = mem_map[lp.MemAccess('global', np.float64, {}, {}, 'store', 'e', None, CG.SUBGROUP)
+    >>> f64st_e = mem_map[lp.MemAccess('global', np.float64, {}, {}, 'store', 'e', None, CG.SUBGROUP, "stats_knl")
     ...                  ].eval_with_dict(param_dict)
-    >>> f32ld_a = mem_map[lp.MemAccess('global', np.float32, {}, {}, 'load', 'a', None, CG.SUBGROUP)
+    >>> f32ld_a = mem_map[lp.MemAccess('global', np.float32, {}, {}, 'load', 'a', None, CG.SUBGROUP, "stats_knl")
     ...                  ].eval_with_dict(param_dict)
-    >>> f32st_c = mem_map[lp.MemAccess('global', np.float32, {}, {}, 'store', 'c', None, CG.SUBGROUP)
+    >>> f32st_c = mem_map[lp.MemAccess('global', np.float32, {}, {}, 'store', 'c', None, CG.SUBGROUP, "stats_knl")
     ...                  ].eval_with_dict(param_dict)
     >>> print("f32 ld a: %i\nf32 st c: %i\nf64 ld g: %i\nf64 st e: %i" %
     ...       (f32ld_a, f32st_c, f64ld_g, f64st_e))
@@ -1709,13 +1717,13 @@ using :func:`loopy.ToCountMap.to_bytes` and :func:`loopy.ToCountMap.group_by`:
 
     >>> bytes_map = mem_map.to_bytes()
     >>> print(lp.stringify_stats_mapping(bytes_map))
-    MemAccess(global, np:dtype('float32'), {}, {}, load, a, None, subgroup) : ...
+    MemAccess(global, np:dtype('float32'), {}, {}, load, a, None, subgroup, stats_knl) : ...
     <BLANKLINE>
     >>> global_ld_st_bytes = bytes_map.filter_by(mtype=['global']
     ...                                         ).group_by('direction')
     >>> print(lp.stringify_stats_mapping(global_ld_st_bytes))
-    MemAccess(None, None, None, None, load, None, None, None) : ...
-    MemAccess(None, None, None, None, store, None, None, None) : ...
+    MemAccess(None, None, None, None, load, None, None, None, None) : ...
+    MemAccess(None, None, None, None, store, None, None, None, None) : ...
     <BLANKLINE>
     >>> loaded = global_ld_st_bytes[lp.MemAccess(direction='load')
     ...                            ].eval_with_dict(param_dict)
@@ -1752,12 +1760,12 @@ this time.
     ...                             outer_tag="l.1", inner_tag="l.0")
     >>> mem_map = lp.get_mem_access_map(knl_consec, subgroup_size=32)
     >>> print(lp.stringify_stats_mapping(mem_map))
-    MemAccess(global, np:dtype('float32'), {0: 1, 1: 128}, {}, load, a, None, workitem) : ...
-    MemAccess(global, np:dtype('float32'), {0: 1, 1: 128}, {}, load, b, None, workitem) : ...
-    MemAccess(global, np:dtype('float32'), {0: 1, 1: 128}, {}, store, c, None, workitem) : ...
-    MemAccess(global, np:dtype('float64'), {0: 1, 1: 128}, {}, load, g, None, workitem) : ...
-    MemAccess(global, np:dtype('float64'), {0: 1, 1: 128}, {}, load, h, None, workitem) : ...
-    MemAccess(global, np:dtype('float64'), {0: 1, 1: 128}, {}, store, e, None, workitem) : ...
+    MemAccess(global, np:dtype('float32'), {0: 1, 1: 128}, {}, load, a, None, workitem, stats_knl) : ...
+    MemAccess(global, np:dtype('float32'), {0: 1, 1: 128}, {}, load, b, None, workitem, stats_knl) : ...
+    MemAccess(global, np:dtype('float32'), {0: 1, 1: 128}, {}, store, c, None, workitem, stats_knl) : ...
+    MemAccess(global, np:dtype('float64'), {0: 1, 1: 128}, {}, load, g, None, workitem, stats_knl) : ...
+    MemAccess(global, np:dtype('float64'), {0: 1, 1: 128}, {}, load, h, None, workitem, stats_knl) : ...
+    MemAccess(global, np:dtype('float64'), {0: 1, 1: 128}, {}, store, e, None, workitem, stats_knl) : ...
     <BLANKLINE>
 
 With this parallelization, consecutive work-items will access consecutive array
@@ -1767,13 +1775,13 @@ array accesses has not changed:
 
 .. doctest::
 
-    >>> f64ld_g = mem_map[lp.MemAccess('global', np.float64, {0: 1, 1: 128}, {}, 'load', 'g', None, CG.WORKITEM)
+    >>> f64ld_g = mem_map[lp.MemAccess('global', np.float64, {0: 1, 1: 128}, {}, 'load', 'g', None, CG.WORKITEM, "stats_knl")
     ...                  ].eval_with_dict(param_dict)
-    >>> f64st_e = mem_map[lp.MemAccess('global', np.float64, {0: 1, 1: 128}, {}, 'store', 'e', None, CG.WORKITEM)
+    >>> f64st_e = mem_map[lp.MemAccess('global', np.float64, {0: 1, 1: 128}, {}, 'store', 'e', None, CG.WORKITEM, "stats_knl")
     ...                  ].eval_with_dict(param_dict)
-    >>> f32ld_a = mem_map[lp.MemAccess('global', np.float32, {0: 1, 1: 128}, {}, 'load', 'a', None, CG.WORKITEM)
+    >>> f32ld_a = mem_map[lp.MemAccess('global', np.float32, {0: 1, 1: 128}, {}, 'load', 'a', None, CG.WORKITEM, "stats_knl")
     ...                  ].eval_with_dict(param_dict)
-    >>> f32st_c = mem_map[lp.MemAccess('global', np.float32, {0: 1, 1: 128}, {}, 'store', 'c', None, CG.WORKITEM)
+    >>> f32st_c = mem_map[lp.MemAccess('global', np.float32, {0: 1, 1: 128}, {}, 'store', 'c', None, CG.WORKITEM, "stats_knl")
     ...                  ].eval_with_dict(param_dict)
     >>> print("f32 ld a: %i\nf32 st c: %i\nf64 ld g: %i\nf64 st e: %i" %
     ...       (f32ld_a, f32st_c, f64ld_g, f64st_e))
@@ -1793,12 +1801,12 @@ we'll switch the inner and outer tags in our parallelization of the kernel:
     ...                                outer_tag="l.0", inner_tag="l.1")
     >>> mem_map = lp.get_mem_access_map(knl_nonconsec, subgroup_size=32)
     >>> print(lp.stringify_stats_mapping(mem_map))
-    MemAccess(global, np:dtype('float32'), {0: 128, 1: 1}, {}, load, a, None, workitem) : ...
-    MemAccess(global, np:dtype('float32'), {0: 128, 1: 1}, {}, load, b, None, workitem) : ...
-    MemAccess(global, np:dtype('float32'), {0: 128, 1: 1}, {}, store, c, None, workitem) : ...
-    MemAccess(global, np:dtype('float64'), {0: 128, 1: 1}, {}, load, g, None, workitem) : ...
-    MemAccess(global, np:dtype('float64'), {0: 128, 1: 1}, {}, load, h, None, workitem) : ...
-    MemAccess(global, np:dtype('float64'), {0: 128, 1: 1}, {}, store, e, None, workitem) : ...
+    MemAccess(global, np:dtype('float32'), {0: 128, 1: 1}, {}, load, a, None, workitem, stats_knl) : ...
+    MemAccess(global, np:dtype('float32'), {0: 128, 1: 1}, {}, load, b, None, workitem, stats_knl) : ...
+    MemAccess(global, np:dtype('float32'), {0: 128, 1: 1}, {}, store, c, None, workitem, stats_knl) : ...
+    MemAccess(global, np:dtype('float64'), {0: 128, 1: 1}, {}, load, g, None, workitem, stats_knl) : ...
+    MemAccess(global, np:dtype('float64'), {0: 128, 1: 1}, {}, load, h, None, workitem, stats_knl) : ...
+    MemAccess(global, np:dtype('float64'), {0: 128, 1: 1}, {}, store, e, None, workitem, stats_knl) : ...
     <BLANKLINE>
 
 With this parallelization, consecutive work-items will access *nonconsecutive*
@@ -1807,13 +1815,13 @@ changed:
 
 .. doctest::
 
-    >>> f64ld_g = mem_map[lp.MemAccess('global', np.float64, {0: 128, 1: 1}, {}, 'load', 'g', None, CG.WORKITEM)
+    >>> f64ld_g = mem_map[lp.MemAccess('global', np.float64, {0: 128, 1: 1}, {}, 'load', 'g', None, CG.WORKITEM, "stats_knl")
     ...                  ].eval_with_dict(param_dict)
-    >>> f64st_e = mem_map[lp.MemAccess('global', np.float64, {0: 128, 1: 1}, {}, 'store', 'e', None, CG.WORKITEM)
+    >>> f64st_e = mem_map[lp.MemAccess('global', np.float64, {0: 128, 1: 1}, {}, 'store', 'e', None, CG.WORKITEM, "stats_knl")
     ...                  ].eval_with_dict(param_dict)
-    >>> f32ld_a = mem_map[lp.MemAccess('global', np.float32, {0: 128, 1: 1}, {}, 'load', 'a', None, CG.WORKITEM)
+    >>> f32ld_a = mem_map[lp.MemAccess('global', np.float32, {0: 128, 1: 1}, {}, 'load', 'a', None, CG.WORKITEM, "stats_knl")
     ...                  ].eval_with_dict(param_dict)
-    >>> f32st_c = mem_map[lp.MemAccess('global', np.float32, {0: 128, 1: 1}, {}, 'store', 'c', None, CG.WORKITEM)
+    >>> f32st_c = mem_map[lp.MemAccess('global', np.float32, {0: 128, 1: 1}, {}, 'store', 'c', None, CG.WORKITEM, "stats_knl")
     ...                  ].eval_with_dict(param_dict)
     >>> print("f32 ld a: %i\nf32 st c: %i\nf64 ld g: %i\nf64 st e: %i" %
     ...       (f32ld_a, f32st_c, f64ld_g, f64st_e))
@@ -1847,14 +1855,14 @@ kernel from the previous example:
 
     >>> sync_map = lp.get_synchronization_map(knl)
     >>> print(lp.stringify_stats_mapping(sync_map))
-    kernel_launch : { 1 }
+    Sync(kernel_launch, stats_knl) : [l, m, n] -> { 1 }
     <BLANKLINE>
 
-We can evaluate this polynomial using :func:`islpy.eval_with_dict`:
+We can evaluate this polynomial using :meth:`islpy.PwQPolynomial.eval_with_dict`:
 
 .. doctest::
 
-    >>> launch_count = sync_map["kernel_launch"].eval_with_dict(param_dict)
+    >>> launch_count = sync_map[lp.Sync("kernel_launch", "stats_knl")].eval_with_dict(param_dict)
     >>> print("Kernel launch count: %s" % launch_count)
     Kernel launch count: 1
 
@@ -1907,15 +1915,15 @@ count the barriers using :func:`loopy.get_synchronization_map`:
 
     >>> sync_map = lp.get_synchronization_map(knl)
     >>> print(lp.stringify_stats_mapping(sync_map))
-    barrier_local : { 1000 }
-    kernel_launch : { 1 }
+    Sync(barrier_local, loopy_kernel) : { 1000 }
+    Sync(kernel_launch, loopy_kernel) : { 1 }
     <BLANKLINE>
 
 Based on the kernel code printed above, we would expect each work-item to
 encounter 50x10x2 barriers, which matches the result from
 :func:`loopy.get_synchronization_map`. In this case, the number of barriers
 does not depend on any inames, so we can pass an empty dictionary to
-:func:`islpy.eval_with_dict`.
+:meth:`islpy.PwQPolynomial.eval_with_dict`.
 
 .. }}}
 

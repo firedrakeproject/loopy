@@ -1,7 +1,6 @@
 """Matching functionality for instruction ids and subsitution
 rule invocations stacks."""
 
-from __future__ import division, absolute_import
 
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
@@ -25,12 +24,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from six.moves import range, intern
+from sys import intern
 
 
 NoneType = type(None)
 
 from pytools.lex import RE
+import pytools.tag
 
 __doc__ = """
 .. autofunction:: parse_match
@@ -46,6 +46,7 @@ Match expressions
 .. autoclass:: Or
 .. autoclass:: Not
 .. autoclass:: Id
+.. autoclass:: ObjTagged
 .. autoclass:: Tagged
 .. autoclass:: Writes
 .. autoclass:: Reads
@@ -116,7 +117,7 @@ _PREC_NOT = 30
 
 # {{{ match expression
 
-class MatchExpressionBase(object):
+class MatchExpressionBase:
     def __call__(self, kernel, matchable):
         raise NotImplementedError
 
@@ -162,7 +163,7 @@ class MultiChildMatchExpressionBase(MatchExpressionBase):
         return "(%s)" % (joiner.join(str(ch) for ch in self.children))
 
     def __repr__(self):
-        return "%s(%s)" % (
+        return "{}({})".format(
                 type(self).__name__,
                 ", ".join(repr(ch) for ch in self.children))
 
@@ -199,7 +200,7 @@ class Not(MatchExpressionBase):
         return "(not %s)" % str(self.child)
 
     def __repr__(self):
-        return "%s(%r)" % (type(self).__name__, self.child)
+        return "{}({!r})".format(type(self).__name__, self.child)
 
     def update_persistent_hash(self, key_hash, key_builder):
         key_builder.rec(key_hash, "not_match_expr")
@@ -211,6 +212,21 @@ class Not(MatchExpressionBase):
 
     def __hash__(self):
         return hash((type(self), self.child))
+
+
+class ObjTagged(MatchExpressionBase):
+    """Match if the object is tagged with a given :class:`~pytools.tag.Tag`.
+
+    .. note::
+
+        These instance-based tags will, in the not-too-distant future, replace
+        the string-based tags matched by :class:`Tagged`.
+    """
+    def __init__(self, tag: pytools.tag.Tag):
+        self.tag = tag
+
+    def __call__(self, kernel, matchable):
+        return self.tag in matchable.tags
 
 
 class GlobMatchExpressionBase(MatchExpressionBase):
@@ -226,7 +242,7 @@ class GlobMatchExpressionBase(MatchExpressionBase):
         return descr.lower() + ":" + self.glob
 
     def __repr__(self):
-        return "%s(%r)" % (type(self).__name__, self. glob)
+        return "{}({!r})".format(type(self).__name__, self. glob)
 
     def update_persistent_hash(self, key_hash, key_builder):
         key_builder.rec(key_hash, type(self).__name__)
@@ -246,9 +262,24 @@ class Id(GlobMatchExpressionBase):
 
 
 class Tagged(GlobMatchExpressionBase):
+    """Match a string-based tagged using a glob expression.
+
+    .. note::
+
+        These string-based tags will, in the not-too-distant future, be replace
+        by instance-based tags matched by :class:`ObjTagged`.
+    """
     def __call__(self, kernel, matchable):
+        from loopy.kernel.instruction import LegacyStringInstructionTag
         if matchable.tags:
-            return any(self.re.match(tag) for tag in matchable.tags)
+            return any(
+                    self.re.match(tag.value)
+                    if isinstance(tag, LegacyStringInstructionTag)
+                    else
+
+                    False
+
+                    for tag in matchable.tags)
         else:
             return False
 
@@ -386,7 +417,7 @@ def parse_match(expr):
 
 # {{{ stack match objects
 
-class StackMatchComponent(object):
+class StackMatchComponent:
     def __ne__(self, other):
         return not self.__eq__(other)
 
@@ -455,7 +486,7 @@ class StackWildcardMatchComponent(StackMatchComponent):
 
 # {{{ stack matcher
 
-class RuleInvocationMatchable(object):
+class RuleInvocationMatchable:
     def __init__(self, id, tags):
         self.id = id
         self.tags = tags
@@ -470,7 +501,7 @@ class RuleInvocationMatchable(object):
         raise TypeError("inames: query may not be applied to rule invocations")
 
 
-class StackMatch(object):
+class StackMatch:
     def __init__(self, root_component):
         self.root_component = root_component
 

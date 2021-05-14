@@ -1,6 +1,5 @@
 """Library integration with Random123."""
 
-from __future__ import division, absolute_import
 
 __copyright__ = "Copyright (C) 2016 Andreas Kloeckner"
 
@@ -63,12 +62,12 @@ RNG_VARIANTS = [
         _threefry_base_info.copy(width=4, bits=64),
         ]
 
-FUNC_NAMES_TO_RNG = dict(
-        (v.full_name + suffix, v)
+FUNC_NAMES_TO_RNG = {
+        v.full_name + suffix: v
         for v in RNG_VARIANTS
         for suffix in [
             "", "_f32", "_f64",
-            ])
+            ]}
 
 # }}}
 
@@ -168,8 +167,19 @@ class Random123Callable(ScalarCallable):
     """
     Records information about for the random123 functions.
     """
+    fields = ScalarCallable.fields | {"target"}
+    hash_fields = ScalarCallable.hash_fields + ("target",)
 
-    def with_types(self, arg_id_to_dtype, kernel, callables_table):
+    def __init__(self, name, arg_id_to_dtype=None,
+                 arg_id_to_descr=None, name_in_target=None, target=None):
+        super().__init__(name=name,
+                         arg_id_to_dtype=arg_id_to_dtype,
+                         arg_id_to_descr=arg_id_to_descr,
+                         name_in_target=name_in_target)
+
+        self.target = target
+
+    def with_types(self, arg_id_to_dtype, callables_table):
 
         if 0 not in arg_id_to_dtype or 1 not in arg_id_to_dtype or (
                 arg_id_to_dtype[0] is None or arg_id_to_dtype[1] is None):
@@ -179,7 +189,7 @@ class Random123Callable(ScalarCallable):
                     callables_table)
 
         name = self.name
-        target = kernel.target
+        target = self.target
 
         rng_variant = FUNC_NAMES_TO_RNG[name]
 
@@ -231,10 +241,7 @@ class Random123Callable(ScalarCallable):
         return
 
 
-def random123_function_id_to_in_knl_callable_mapper(target, identifier):
-    if identifier in FUNC_NAMES_TO_RNG:
-        return Random123Callable(name=identifier)
-
-    return None
+def get_random123_callables(target):
+    return {id_: Random123Callable(id_, target=target) for id_ in FUNC_NAMES_TO_RNG}
 
 # vim: foldmethod=marker

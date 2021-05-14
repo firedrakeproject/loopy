@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import
-
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
 __license__ = """
@@ -22,8 +20,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+import logging
+logger = logging.getLogger(__name__)
 
-import six
 from loopy.diagnostic import (
         LoopyError, WriteRaceConditionWarning, warn_with_kernel,
         LoopyAdvisory)
@@ -34,22 +33,25 @@ from pytools.persistent_dict import WriteOncePersistentDict
 from loopy.tools import LoopyKeyBuilder
 from loopy.version import DATA_MODEL_VERSION
 from loopy.kernel.data import make_assignment, filter_iname_tags_by_type
+from loopy.kernel.tools import kernel_has_global_barriers
 # for the benefit of loopy.statistics, for now
 from loopy.type_inference import infer_unknown_types
-from loopy.symbolic import RuleAwareIdentityMapper
+from loopy.symbolic import RuleAwareIdentityMapper, ReductionCallbackMapper
+# from loopy.transform.iname import remove_any_newly_unused_inames
 
 from loopy.kernel.instruction import (MultiAssignmentBase, CInstruction,
         CallInstruction,  _DataObliviousInstruction)
-from loopy.program import Program, iterate_over_kernels_if_given_program
+from loopy.kernel import LoopKernel
+from loopy.translation_unit import TranslationUnit
 from loopy.kernel.function_interface import CallableKernel, ScalarCallable
-import logging
-logger = logging.getLogger(__name__)
+
+from pytools import ProcessLogger
+from functools import partial
 
 
 # {{{ prepare for caching
 
-@iterate_over_kernels_if_given_program
-def prepare_for_caching(kernel):
+def prepare_for_caching_inner(kernel):
     import loopy as lp
     from loopy.types import OpaqueType
     new_args = []
@@ -67,7 +69,7 @@ def prepare_for_caching(kernel):
         new_args.append(arg)
 
     new_temporary_variables = {}
-    for name, temp in six.iteritems(kernel.temporary_variables):
+    for name, temp in kernel.temporary_variables.items():
         dtype = temp.dtype
         if dtype is not None and dtype is not lp.auto and dtype.target is not tgt:
             temp = temp.copy(dtype=dtype.with_target(tgt), target=tgt)
@@ -79,6 +81,32 @@ def prepare_for_caching(kernel):
             temporary_variables=new_temporary_variables)
 
     return kernel
+
+
+def prepare_for_caching(program):
+    if isinstance(program, LoopKernel):
+        return prepare_for_caching_inner(program)
+
+    assert isinstance(program, TranslationUnit)
+    tgt = program.target
+
+    new_clbls = {}
+    for name, clbl in program.callables_table.items():
+        if clbl.arg_id_to_dtype is not None:
+            arg_id_to_dtype = {id: dtype.with_target(tgt)
+                               for id, dtype in clbl.arg_id_to_dtype.items()}
+            clbl = clbl.copy(arg_id_to_dtype=arg_id_to_dtype)
+        if isinstance(clbl, ScalarCallable):
+            pass
+        elif isinstance(clbl, CallableKernel):
+            subknl = prepare_for_caching_inner(clbl.subkernel)
+            clbl = clbl.copy(subkernel=subknl)
+        else:
+            raise NotImplementedError(type(clbl))
+
+        new_clbls[name] = clbl
+
+    return program.copy(callables_table=new_clbls)
 
 # }}}
 
@@ -125,7 +153,7 @@ def check_reduction_iname_uniqueness(kernel):
     for insn in kernel.instructions:
         insn.with_transformed_expressions(cb_mapper)
 
-    for iname, count in six.iteritems(iname_to_reduction_count):
+    for iname, count in iname_to_reduction_count.items():
         nonsimul_count = iname_to_nonsimultaneous_reduction_count.get(iname, 0)
 
         if nonsimul_count and count > 1:
@@ -144,18 +172,18 @@ def check_reduction_iname_uniqueness(kernel):
 # {{{ decide temporary address space
 
 def _get_compute_inames_tagged(kernel, insn, tag_base):
-    return set(iname for iname in kernel.insn_inames(insn.id)
-               if kernel.iname_tags_of_type(iname, tag_base))
+    return {iname for iname in kernel.insn_inames(insn.id)
+               if kernel.iname_tags_of_type(iname, tag_base)}
 
 
 def _get_assignee_inames_tagged(kernel, insn, tag_base, tv_names):
-    return set(iname
+    return {iname
             for aname, adeps in zip(
                 insn.assignee_var_names(),
                 insn.assignee_subscript_deps())
             for iname in adeps & kernel.all_inames()
             if aname in tv_names
-            if kernel.iname_tags_of_type(iname, tag_base))
+            if kernel.iname_tags_of_type(iname, tag_base)}
 
 
 def find_temporary_address_space(kernel):
@@ -172,7 +200,7 @@ def find_temporary_address_space(kernel):
 
     kernel_var_names = kernel.all_variable_names(include_temp_storage=False)
 
-    for temp_var in six.itervalues(kernel.temporary_variables):
+    for temp_var in kernel.temporary_variables.values():
         if temp_var.base_storage is not None:
             # no nesting allowed
             if temp_var.base_storage in kernel_var_names:
@@ -183,7 +211,7 @@ def find_temporary_address_space(kernel):
             base_storage_to_aliases.setdefault(
                     temp_var.base_storage, []).append(temp_var.name)
 
-    for temp_var in six.itervalues(kernel.temporary_variables):
+    for temp_var in kernel.temporary_variables.values():
         # Only fill out for variables that do not yet know if they're
         # local. (I.e. those generated by implicit temporary generation.)
 
@@ -235,7 +263,7 @@ def find_temporary_address_space(kernel):
                 if (apin != cpin and bool(apin)):
                     warn_with_kernel(
                             kernel,
-                            "write_race_%s(%s)" % (aspace_descr, insn_id),
+                            f"write_race_{aspace_descr}({insn_id})",
                             "instruction '%s' looks invalid: "
                             "it assigns to indices based on %s IDs, but "
                             "its temporary '%s' cannot be made %s because "
@@ -254,20 +282,15 @@ def find_temporary_address_space(kernel):
             desired_aspace_per_insn.append(desired_aspace)
 
         if not desired_aspace_per_insn:
-            if temp_var.initializer is None:
-                warn_with_kernel(kernel, "temp_to_write(%s)" % temp_var.name,
-                        "temporary variable '%s' never written, eliminating"
-                        % temp_var.name, LoopyAdvisory)
-            else:
-                raise LoopyError("temporary variable '%s': never written, "
-                        "cannot automatically determine address space"
-                        % temp_var.name)
+            warn_with_kernel(kernel, "temp_to_write(%s)" % temp_var.name,
+                    "cannot automatically determine address space of '%s'"
+                    % temp_var.name, LoopyAdvisory)
 
+            new_temp_vars[temp_var.name] = temp_var
             continue
 
         overall_aspace = max(desired_aspace_per_insn)
 
-        from pytools import all
         if not all(iaspace == overall_aspace for iaspace in desired_aspace_per_insn):
             raise LoopyError("not all instructions agree on the "
                     "the desired address space (private/local/global) of  the "
@@ -298,7 +321,7 @@ def _classify_reduction_inames(kernel, inames):
     nonlocal_par = []
 
     from loopy.kernel.data import (
-            LocalIndexTagBase, UnrolledIlpTag, UnrollTag, VectorizeTag,
+            LocalIndexTagBase, UnrolledIlpTag, UnrollTag,
             ConcurrentTag, filter_iname_tags_by_type)
 
     for iname in inames:
@@ -312,7 +335,7 @@ def _classify_reduction_inames(kernel, inames):
         elif filter_iname_tags_by_type(iname_tags, LocalIndexTagBase):
             local_par.append(iname)
 
-        elif filter_iname_tags_by_type(iname_tags, (ConcurrentTag, VectorizeTag)):
+        elif filter_iname_tags_by_type(iname_tags, ConcurrentTag):
             nonlocal_par.append(iname)
 
         else:
@@ -454,7 +477,7 @@ def _try_infer_scan_candidate_from_expr(
 
     if len(expr.inames) != 1:
         raise ValueError(
-                "Multiple inames in reduction: '%s'" % (", ".join(expr.inames),))
+                "Multiple inames in reduction: '{}'".format(", ".join(expr.inames)))
 
     scan_iname, = expr.inames
 
@@ -503,9 +526,9 @@ def _try_infer_sweep_iname(domain, scan_iname, candidate_inames):
     sweep_iname_candidate = None
 
     for constr in constrs:
-        candidate_vars = set([
+        candidate_vars = {
                 var for var in constr.get_var_dict()
-                if var in candidate_inames])
+                if var in candidate_inames}
 
         # Irrelevant constraint - skip
         if scan_iname not in candidate_vars:
@@ -722,13 +745,12 @@ def _hackily_ensure_multi_assignment_return_values_are_scoped_private(kernel):
     new_or_updated_instructions = {}
     new_temporaries = {}
 
-    dep_map = dict(
-            (insn.id, insn.depends_on) for insn in kernel.instructions)
+    dep_map = {
+            insn.id: insn.depends_on for insn in kernel.instructions}
 
-    inverse_dep_map = dict((insn.id, set()) for insn in kernel.instructions)
+    inverse_dep_map = {insn.id: set() for insn in kernel.instructions}
 
-    import six
-    for insn_id, deps in six.iteritems(dep_map):
+    for insn_id, deps in dep_map.items():
         for dep in deps:
             inverse_dep_map[dep].add(insn_id)
 
@@ -869,6 +891,9 @@ def _hackily_ensure_multi_assignment_return_values_are_scoped_private(kernel):
 
         # }}}
 
+    if not new_temporaries and not new_or_updated_instructions:
+        return kernel
+
     new_temporary_variables = kernel.temporary_variables.copy()
     new_temporary_variables.update(new_temporaries)
 
@@ -894,6 +919,18 @@ def _insert_subdomain_into_domain_tree(kernel, domains, subdomain):
 # }}}
 
 
+class RealizeReductionCallbackMapper(ReductionCallbackMapper):
+    def __init__(self, callback, callables_table):
+        super().__init__(callback)
+        self.callables_table = callables_table
+
+    def map_reduction(self, expr, **kwargs):
+        result, self.callables_table = self.callback(expr, self.rec,
+                **kwargs)
+        return result
+
+
+# @remove_any_newly_unused_inames
 def realize_reduction_for_single_kernel(kernel, callables_table,
         insn_id_filter=None, unknown_types_ok=True, automagic_scans_ok=False,
         force_scan=False, force_outer_iname_for_scan=None):
@@ -954,7 +991,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
             # items that are not "plain" tuples here.
             if not isinstance(inner_expr, tuple):
                 get_args_insn_id = insn_id_gen(
-                        "%s_%s_get" % (insn.id, "_".join(expr.inames)))
+                        "{}_{}_get".format(insn.id, "_".join(expr.inames)))
 
                 inner_expr = expand_inner_reduction(
                         id=get_args_insn_id,
@@ -1018,7 +1055,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
 
     def map_reduction_seq(expr, rec, callables_table, nresults, arg_dtypes,
             reduction_dtypes):
-        outer_insn_inames = temp_kernel.insn_inames(insn)
+        outer_insn_inames = insn.within_inames
 
         from loopy.kernel.data import AddressSpace
         acc_var_names = make_temporaries(
@@ -1030,16 +1067,26 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
 
         init_insn_depends_on = frozenset()
 
-        global_barrier = lp.find_most_recent_global_barrier(temp_kernel, insn.id)
+        # check first that the original kernel had global barriers
+        # if not, we don't need to check. Since the function
+        # kernel_has_global_barriers is cached, we don't do
+        # extra work compared to not checking.
+        # FIXME: Explain why we care about global barriers her
+        if kernel_has_global_barriers(kernel):
+            global_barrier = lp.find_most_recent_global_barrier(temp_kernel,
+                    insn.id)
 
-        if global_barrier is not None:
-            init_insn_depends_on |= frozenset([global_barrier])
+            if global_barrier is not None:
+                init_insn_depends_on |= frozenset([global_barrier])
 
         from pymbolic import var
         acc_vars = tuple(var(n) for n in acc_var_names)
 
         init_id = insn_id_gen(
-                "%s_%s_init" % (insn.id, "_".join(expr.inames)))
+                "{}_{}_init".format(insn.id, "_".join(expr.inames)))
+
+        expression, callables_table = expr.operation.neutral_element(
+                *arg_dtypes, callables_table=callables_table, target=kernel.target)
 
         init_insn = make_assignment(
                 id=init_id,
@@ -1047,26 +1094,35 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
                 within_inames=outer_insn_inames - frozenset(expr.inames),
                 within_inames_is_final=insn.within_inames_is_final,
                 depends_on=init_insn_depends_on,
-                expression=expr.operation.neutral_element(*arg_dtypes),
-                predicates=insn.predicates,)
+                expression=expression,
+
+                # Do not inherit predicates: Those might read variables
+                # that may not yet be set, and we don't have a great way
+                # of figuring out what the dependencies of the accumulator
+                # initializer should be.
+
+                # This way, we may initialize a few too many accumulators,
+                # but that's better than being incorrect.
+                # https://github.com/inducer/loopy/issues/231
+                )
 
         generated_insns.append(init_insn)
 
         update_id = insn_id_gen(
-                based_on="%s_%s_update" % (insn.id, "_".join(expr.inames)))
+                based_on="{}_{}_update".format(insn.id, "_".join(expr.inames)))
 
-        update_insn_iname_deps = temp_kernel.insn_inames(insn) | set(expr.inames)
+        update_insn_iname_deps = insn.within_inames | set(expr.inames)
         if insn.within_inames_is_final:
             update_insn_iname_deps = insn.within_inames | set(expr.inames)
 
-        reduction_insn_depends_on = set([init_id])
+        reduction_insn_depends_on = {init_id}
 
         # In the case of a multi-argument reduction, we need a name for each of
         # the arguments in order to pass them to the binary op - so we expand
         # items that are not "plain" tuples here.
         if nresults > 1 and not isinstance(expr.expr, tuple):
             get_args_insn_id = insn_id_gen(
-                    "%s_%s_get" % (insn.id, "_".join(expr.inames)))
+                    "{}_{}_get".format(insn.id, "_".join(expr.inames)))
 
             reduction_expr = expand_inner_reduction(
                     id=get_args_insn_id,
@@ -1082,13 +1138,17 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
         else:
             reduction_expr = expr.expr
 
+        expression, callables_table = expr.operation(
+                arg_dtypes,
+                _strip_if_scalar(acc_vars, acc_vars),
+                reduction_expr,
+                callables_table,
+                kernel.target)
+
         reduction_insn = make_assignment(
                 id=update_id,
                 assignees=acc_vars,
-                expression=expr.operation(
-                    arg_dtypes,
-                    _strip_if_scalar(acc_vars, acc_vars),
-                    reduction_expr),
+                expression=expression,
                 depends_on=frozenset(reduction_insn_depends_on) | insn.depends_on,
                 within_inames=update_insn_iname_deps,
                 within_inames_is_final=insn.within_inames_is_final,
@@ -1100,9 +1160,9 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
 
         if nresults == 1:
             assert len(acc_vars) == 1
-            return acc_vars[0]
+            return acc_vars[0], callables_table
         else:
-            return acc_vars
+            return acc_vars, callables_table
 
     # }}}
 
@@ -1115,7 +1175,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
                 static_max_of_pw_aff(
                     kernel.get_iname_bounds(iname).size,
                     constants_only=True))
-        assert isinstance(size, six.integer_types)
+        assert isinstance(size, int)
         return size
 
     def _make_slab_set(iname, size):
@@ -1140,7 +1200,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
 
         size = _get_int_iname_size(red_iname)
 
-        outer_insn_inames = temp_kernel.insn_inames(insn)
+        outer_insn_inames = insn.within_inames
 
         from loopy.kernel.data import LocalIndexTagBase
         outer_local_inames = tuple(oiname for oiname in outer_insn_inames
@@ -1185,8 +1245,9 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
 
         base_iname_deps = outer_insn_inames - frozenset(expr.inames)
 
-        neutral = expr.operation.neutral_element(*arg_dtypes)
-        init_id = insn_id_gen("%s_%s_init" % (insn.id, red_iname))
+        neutral, callables_table = expr.operation.neutral_element(*arg_dtypes,
+                callables_table=callables_table, target=kernel.target)
+        init_id = insn_id_gen(f"{insn.id}_{red_iname}_init")
         init_insn = make_assignment(
                 id=init_id,
                 assignees=tuple(
@@ -1196,11 +1257,18 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
                 within_inames=base_iname_deps | frozenset([base_exec_iname]),
                 within_inames_is_final=insn.within_inames_is_final,
                 depends_on=frozenset(),
-                predicates=insn.predicates,
+                # Do not inherit predicates: Those might read variables
+                # that may not yet be set, and we don't have a great way
+                # of figuring out what the dependencies of the accumulator
+                # initializer should be.
+
+                # This way, we may initialize a few too many accumulators,
+                # but that's better than being incorrect.
+                # https://github.com/inducer/loopy/issues/231
                 )
         generated_insns.append(init_insn)
 
-        init_neutral_id = insn_id_gen("%s_%s_init_neutral" % (insn.id, red_iname))
+        init_neutral_id = insn_id_gen(f"{insn.id}_{red_iname}_init_neutral")
         init_neutral_insn = make_assignment(
                 id=init_neutral_id,
                 assignees=tuple(var(nvn) for nvn in neutral_var_names),
@@ -1212,14 +1280,14 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
                 )
         generated_insns.append(init_neutral_insn)
 
-        transfer_depends_on = set([init_neutral_id, init_id])
+        transfer_depends_on = {init_neutral_id, init_id}
 
         # In the case of a multi-argument reduction, we need a name for each of
         # the arguments in order to pass them to the binary op - so we expand
         # items that are not "plain" tuples here.
         if nresults > 1 and not isinstance(expr.expr, tuple):
             get_args_insn_id = insn_id_gen(
-                    "%s_%s_get" % (insn.id, red_iname))
+                    f"{insn.id}_{red_iname}_get")
 
             reduction_expr = expand_inner_reduction(
                     id=get_args_insn_id,
@@ -1237,18 +1305,21 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
         else:
             reduction_expr = expr.expr
 
-        transfer_id = insn_id_gen("%s_%s_transfer" % (insn.id, red_iname))
+        transfer_id = insn_id_gen(f"{insn.id}_{red_iname}_transfer")
+        expression, callables_table = expr.operation(
+                arg_dtypes,
+                _strip_if_scalar(
+                    neutral_var_names,
+                    tuple(var(nvn) for nvn in neutral_var_names)),
+                reduction_expr,
+                callables_table,
+                kernel.target)
         transfer_insn = make_assignment(
                 id=transfer_id,
                 assignees=tuple(
                     acc_var[outer_local_iname_vars + (var(red_iname),)]
                     for acc_var in acc_vars),
-                expression=expr.operation(
-                    arg_dtypes,
-                    _strip_if_scalar(
-                        neutral_var_names,
-                        tuple(var(nvn) for nvn in neutral_var_names)),
-                    reduction_expr),
+                expression=expression,
                 within_inames=(
                     (outer_insn_inames - frozenset(expr.inames))
                     | frozenset([red_iname])),
@@ -1277,22 +1348,26 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
             new_iname_tags[stage_exec_iname] = kernel.iname_tags(red_iname)
 
             stage_id = insn_id_gen("red_%s_stage_%d" % (red_iname, istage))
+            expression, callables_table = expr.operation(
+                    arg_dtypes,
+                    _strip_if_scalar(acc_vars, tuple(
+                        acc_var[
+                            outer_local_iname_vars + (var(stage_exec_iname),)]
+                        for acc_var in acc_vars)),
+                    _strip_if_scalar(acc_vars, tuple(
+                        acc_var[
+                            outer_local_iname_vars + (
+                                var(stage_exec_iname) + new_size,)]
+                        for acc_var in acc_vars)),
+                    callables_table,
+                    kernel.target)
+
             stage_insn = make_assignment(
                     id=stage_id,
                     assignees=tuple(
                         acc_var[outer_local_iname_vars + (var(stage_exec_iname),)]
                         for acc_var in acc_vars),
-                    expression=expr.operation(
-                        arg_dtypes,
-                        _strip_if_scalar(acc_vars, tuple(
-                            acc_var[
-                                outer_local_iname_vars + (var(stage_exec_iname),)]
-                            for acc_var in acc_vars)),
-                        _strip_if_scalar(acc_vars, tuple(
-                            acc_var[
-                                outer_local_iname_vars + (
-                                    var(stage_exec_iname) + new_size,)]
-                            for acc_var in acc_vars))),
+                    expression=expression,
                     within_inames=(
                         base_iname_deps | frozenset([stage_exec_iname])),
                     within_inames_is_final=insn.within_inames_is_final,
@@ -1313,9 +1388,10 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
 
         if nresults == 1:
             assert len(acc_vars) == 1
-            return acc_vars[0][outer_local_iname_vars + (0,)]
+            return acc_vars[0][outer_local_iname_vars + (0,)], callables_table
         else:
-            return [acc_var[outer_local_iname_vars + (0,)] for acc_var in acc_vars]
+            return [acc_var[outer_local_iname_vars + (0,)] for acc_var in
+                    acc_vars], callables_table
     # }}}
 
     # {{{ utils (stateful)
@@ -1377,12 +1453,12 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
     def map_scan_seq(expr, rec, callables_table, nresults, arg_dtypes,
             reduction_dtypes, sweep_iname, scan_iname, sweep_min_value,
             scan_min_value, stride):
-        outer_insn_inames = temp_kernel.insn_inames(insn)
+        outer_insn_inames = insn.within_inames
         inames_to_remove.add(scan_iname)
 
         track_iname = var_name_gen(
                 "{sweep_iname}__seq_scan"
-                .format(scan_iname=scan_iname, sweep_iname=sweep_iname))
+                .format(sweep_iname=sweep_iname))
 
         get_or_add_sweep_tracking_iname_and_domain(
                 scan_iname, sweep_iname, sweep_min_value, scan_min_value,
@@ -1400,14 +1476,19 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
         acc_vars = tuple(var(n) for n in acc_var_names)
 
         init_id = insn_id_gen(
-                "%s_%s_init" % (insn.id, "_".join(expr.inames)))
+                "{}_{}_init".format(insn.id, "_".join(expr.inames)))
 
         init_insn_depends_on = frozenset()
 
-        global_barrier = lp.find_most_recent_global_barrier(temp_kernel, insn.id)
+        # FIXME: Explain why we care about global barriers here
+        if kernel_has_global_barriers(kernel):
+            global_barrier = lp.find_most_recent_global_barrier(temp_kernel, insn.id)
 
-        if global_barrier is not None:
-            init_insn_depends_on |= frozenset([global_barrier])
+            if global_barrier is not None:
+                init_insn_depends_on |= frozenset([global_barrier])
+
+        expression, callables_table = expr.operation.neutral_element(
+                *arg_dtypes, callables_table=callables_table, target=kernel.target)
 
         init_insn = make_assignment(
                 id=init_id,
@@ -1416,32 +1497,43 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
                     (sweep_iname,) + expr.inames),
                 within_inames_is_final=insn.within_inames_is_final,
                 depends_on=init_insn_depends_on,
-                expression=expr.operation.neutral_element(*arg_dtypes),
-                predicates=insn.predicates,
+                expression=expression,
+                # Do not inherit predicates: Those might read variables
+                # that may not yet be set, and we don't have a great way
+                # of figuring out what the dependencies of the accumulator
+                # initializer should be.
+
+                # This way, we may initialize a few too many accumulators,
+                # but that's better than being incorrect.
+                # https://github.com/inducer/loopy/issues/231
                 )
 
         generated_insns.append(init_insn)
 
-        update_insn_depends_on = set([init_insn.id]) | insn.depends_on
+        update_insn_depends_on = {init_insn.id} | insn.depends_on
 
         updated_inner_exprs = (
                 preprocess_scan_arguments(insn, expr.expr, nresults,
                     scan_iname, track_iname, update_insn_depends_on))
 
         update_id = insn_id_gen(
-                based_on="%s_%s_update" % (insn.id, "_".join(expr.inames)))
+                based_on="{}_{}_update".format(insn.id, "_".join(expr.inames)))
 
-        update_insn_iname_deps = temp_kernel.insn_inames(insn) | set([track_iname])
+        update_insn_iname_deps = insn.within_inames | {track_iname}
         if insn.within_inames_is_final:
-            update_insn_iname_deps = insn.within_inames | set([track_iname])
+            update_insn_iname_deps = insn.within_inames | {track_iname}
+
+        expression, callables_table = expr.operation(
+                arg_dtypes,
+                _strip_if_scalar(acc_vars, acc_vars),
+                _strip_if_scalar(acc_vars, updated_inner_exprs),
+                callables_table,
+                kernel.target)
 
         scan_insn = make_assignment(
                 id=update_id,
                 assignees=acc_vars,
-                expression=expr.operation(
-                    arg_dtypes,
-                    _strip_if_scalar(acc_vars, acc_vars),
-                    _strip_if_scalar(acc_vars, updated_inner_exprs)),
+                expression=expression,
                 depends_on=frozenset(update_insn_depends_on),
                 within_inames=update_insn_iname_deps,
                 no_sync_with=insn.no_sync_with,
@@ -1455,9 +1547,9 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
 
         if nresults == 1:
             assert len(acc_vars) == 1
-            return acc_vars[0]
+            return acc_vars[0], callables_table
         else:
-            return acc_vars
+            return acc_vars, callables_table
 
     # }}}
 
@@ -1475,7 +1567,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
             return map_reduction_seq(expr, rec, callables_table,
                     nresults, arg_dtypes, reduction_dtypes)
 
-        outer_insn_inames = temp_kernel.insn_inames(insn)
+        outer_insn_inames = insn.within_inames
 
         from loopy.kernel.data import LocalIndexTagBase
         outer_local_inames = tuple(oiname for oiname in outer_insn_inames
@@ -1492,7 +1584,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
 
         track_iname = var_name_gen(
                 "{sweep_iname}__pre_scan"
-                .format(scan_iname=scan_iname, sweep_iname=sweep_iname))
+                .format(sweep_iname=sweep_iname))
 
         get_or_add_sweep_tracking_iname_and_domain(
                 scan_iname, sweep_iname, sweep_min_value, scan_min_value, stride,
@@ -1531,16 +1623,19 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
         base_iname_deps = (outer_insn_inames
                 - frozenset(expr.inames) - frozenset([sweep_iname]))
 
-        neutral = expr.operation.neutral_element(*arg_dtypes)
+        neutral, callables_table = expr.operation.neutral_element(
+                *arg_dtypes, callables_table=callables_table, target=kernel.target)
 
         init_insn_depends_on = insn.depends_on
 
-        global_barrier = lp.find_most_recent_global_barrier(temp_kernel, insn.id)
+        # FIXME: Explain why we care about global barriers here
+        if kernel_has_global_barriers(kernel):
+            global_barrier = lp.find_most_recent_global_barrier(temp_kernel, insn.id)
 
-        if global_barrier is not None:
-            init_insn_depends_on |= frozenset([global_barrier])
+            if global_barrier is not None:
+                init_insn_depends_on |= frozenset([global_barrier])
 
-        init_id = insn_id_gen("%s_%s_init" % (insn.id, scan_iname))
+        init_id = insn_id_gen(f"{insn.id}_{scan_iname}_init")
         init_insn = make_assignment(
                 id=init_id,
                 assignees=tuple(
@@ -1550,11 +1645,18 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
                 within_inames=base_iname_deps | frozenset([base_exec_iname]),
                 within_inames_is_final=insn.within_inames_is_final,
                 depends_on=init_insn_depends_on,
-                predicates=insn.predicates,
+                # Do not inherit predicates: Those might read variables
+                # that may not yet be set, and we don't have a great way
+                # of figuring out what the dependencies of the accumulator
+                # initializer should be.
+
+                # This way, we may initialize a few too many accumulators,
+                # but that's better than being incorrect.
+                # https://github.com/inducer/loopy/issues/231
                 )
         generated_insns.append(init_insn)
 
-        transfer_insn_depends_on = set([init_insn.id]) | insn.depends_on
+        transfer_insn_depends_on = {init_insn.id} | insn.depends_on
 
         updated_inner_exprs = (
                 preprocess_scan_arguments(insn, expr.expr, nresults,
@@ -1565,7 +1667,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
         from loopy.symbolic import pw_aff_to_expr
         sweep_min_value_expr = pw_aff_to_expr(sweep_min_value)
 
-        transfer_id = insn_id_gen("%s_%s_transfer" % (insn.id, scan_iname))
+        transfer_id = insn_id_gen(f"{insn.id}_{scan_iname}_transfer")
         transfer_insn = make_assignment(
                 id=transfer_id,
                 assignees=tuple(
@@ -1630,19 +1732,23 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
 
             write_stage_id = insn_id_gen(
                     "scan_%s_write_stage_%d" % (scan_iname, istage))
+
+            expression, callables_table = expr.operation(
+                arg_dtypes,
+                _strip_if_scalar(acc_vars, read_vars),
+                _strip_if_scalar(acc_vars, tuple(
+                    acc_var[
+                        outer_local_iname_vars + (var(stage_exec_iname),)]
+                    for acc_var in acc_vars)),
+                callables_table,
+                kernel.target)
+
             write_stage_insn = make_assignment(
                     id=write_stage_id,
                     assignees=tuple(
                         acc_var[outer_local_iname_vars + (var(stage_exec_iname),)]
                         for acc_var in acc_vars),
-                    expression=expr.operation(
-                        arg_dtypes,
-                        _strip_if_scalar(acc_vars, read_vars),
-                        _strip_if_scalar(acc_vars, tuple(
-                            acc_var[
-                                outer_local_iname_vars + (var(stage_exec_iname),)]
-                            for acc_var in acc_vars))
-                        ),
+                    expression=expression,
                     within_inames=(
                         base_iname_deps | frozenset([stage_exec_iname])),
                     within_inames_is_final=insn.within_inames_is_final,
@@ -1663,10 +1769,11 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
 
         if nresults == 1:
             assert len(acc_vars) == 1
-            return acc_vars[0][outer_local_iname_vars + (output_idx,)]
+            return (acc_vars[0][outer_local_iname_vars + (output_idx,)],
+                    callables_table)
         else:
             return [acc_var[outer_local_iname_vars + (output_idx,)]
-                    for acc_var in acc_vars]
+                    for acc_var in acc_vars], callables_table
 
     # }}}
 
@@ -1678,11 +1785,11 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
 
         from loopy.type_inference import (
                 infer_arg_and_reduction_dtypes_for_reduction_expression)
-        arg_dtypes, reduction_dtypes, callables_table = (
+        arg_dtypes, reduction_dtypes = (
                 infer_arg_and_reduction_dtypes_for_reduction_expression(
                     temp_kernel, expr, callables_table, unknown_types_ok))
 
-        outer_insn_inames = temp_kernel.insn_inames(insn)
+        outer_insn_inames = insn.within_inames
         bad_inames = frozenset(expr.inames) & outer_insn_inames
         if bad_inames:
             raise LoopyError("reduction used within loop(s) that it was "
@@ -1760,7 +1867,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
             # to reduce over. It's rather similar to an array with () shape in
             # numpy.)
 
-            return expr.expr
+            return expr.expr, callables_table
 
         # }}}
 
@@ -1828,14 +1935,14 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
 
     # }}}
 
-    from loopy.symbolic import ReductionCallbackMapper
-    cb_mapper = ReductionCallbackMapper(map_reduction)
+    cb_mapper = RealizeReductionCallbackMapper(map_reduction, callables_table)
 
     insn_queue = kernel.instructions[:]
     insn_id_replacements = {}
     domains = kernel.domains[:]
 
     temp_kernel = kernel
+    changed = False
 
     import loopy as lp
     while insn_queue:
@@ -1858,12 +1965,11 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
         from loopy.symbolic import Reduction
         if isinstance(insn.expression, Reduction) and nresults > 1:
             new_expressions = cb_mapper(insn.expression,
-                    callables_table=callables_table,
+                    callables_table=cb_mapper.callables_table,
                     nresults=nresults)
         else:
-            new_expressions = (
-                    cb_mapper(insn.expression,
-                        callables_table=callables_table),)
+            new_expressions = cb_mapper(insn.expression,
+                    callables_table=cb_mapper.callables_table),
 
         if generated_insns:
             # An expansion happened, so insert the generated stuff plus
@@ -1875,7 +1981,7 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
                     no_sync_with=insn.no_sync_with
                     | frozenset(new_insn_add_no_sync_with),
                     within_inames=(
-                        temp_kernel.insn_inames(insn)
+                        insn.within_inames
                         | new_insn_add_within_inames))
 
             kwargs.pop("id")
@@ -1902,19 +2008,20 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
                         for i, (assignee, new_expr) in enumerate(zip(
                             insn.assignees, new_expressions))]
 
+                insn_id_replacements[insn.id] = [
+                    rinsn.id for rinsn in replacement_insns]
             else:
                 new_expr, = new_expressions
+                # since we are replacing the instruction with
+                # only one instruction, there's no need to replace id
                 replacement_insns = [
                         make_assignment(
-                            id=insn_id_gen(insn.id),
+                            id=insn.id,
                             depends_on=result_assignment_dep_on,
                             assignees=insn.assignees,
                             expression=new_expr,
                             **kwargs)
                         ]
-
-            insn_id_replacements[insn.id] = [
-                    rinsn.id for rinsn in replacement_insns]
 
             insn_queue = generated_insns + replacement_insns + insn_queue
 
@@ -1927,14 +2034,15 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
                     domains=domains)
             temp_kernel = lp.replace_instruction_ids(
                     temp_kernel, insn_id_replacements)
-
+            changed = True
         else:
             # nothing happened, we're done with insn
             assert not new_insn_add_depends_on
 
             new_insns.append(insn)
 
-    kernel = kernel.copy(
+    if changed:
+        kernel = kernel.copy(
             instructions=new_insns,
             temporary_variables=new_temporary_variables,
             domains=domains)
@@ -1944,38 +2052,29 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
     from loopy.transform.iname import tag_inames
     kernel = tag_inames(kernel, new_iname_tags)
 
-    # TODO: remove unused inames...
-
     kernel = (
             _hackily_ensure_multi_assignment_return_values_are_scoped_private(
                 kernel))
 
-    return kernel
+    return kernel, cb_mapper.callables_table
 
 
 def realize_reduction(program, *args, **kwargs):
-    assert isinstance(program, Program)
+    assert isinstance(program, TranslationUnit)
 
-    new_resolved_functions = {}
-    for func_id, in_knl_callable in program.callables_table.items():
-        if isinstance(in_knl_callable, CallableKernel):
-            new_subkernel = realize_reduction_for_single_kernel(
-                    in_knl_callable.subkernel, program.callables_table,
-                    *args, **kwargs)
-            in_knl_callable = in_knl_callable.copy(
-                    subkernel=new_subkernel)
+    callables_table = dict(program.callables_table)
+    kernels_to_scan = [in_knl_callable.subkernel
+            for in_knl_callable in program.callables_table.values()
+            if isinstance(in_knl_callable, CallableKernel)]
 
-        elif isinstance(in_knl_callable, ScalarCallable):
-            pass
-        else:
-            raise NotImplementedError("Unknown type of callable %s." % (
-                type(in_knl_callable).__name__))
+    for knl in kernels_to_scan:
+        new_knl, callables_table = realize_reduction_for_single_kernel(
+                knl, callables_table, *args, **kwargs)
+        in_knl_callable = callables_table[knl.name].copy(
+                subkernel=new_knl)
+        callables_table[knl.name] = in_knl_callable
 
-        new_resolved_functions[func_id] = in_knl_callable
-
-    new_callables_table = program.callables_table.copy(
-            resolved_functions=new_resolved_functions)
-    return program.copy(callables_table=new_callables_table)
+    return program.copy(callables_table=callables_table)
 
 # }}}
 
@@ -1989,120 +2088,15 @@ def realize_ilp(kernel):
                                    filter_iname_tags_by_type)
 
     privatizing_inames = frozenset(
-        iname for iname, tags in six.iteritems(kernel.iname_to_tags)
-        if filter_iname_tags_by_type(tags, (IlpBaseTag, VectorizeTag))
+        name for name, iname in kernel.inames.items()
+        if filter_iname_tags_by_type(iname.tags, (IlpBaseTag, VectorizeTag))
     )
+
+    if not privatizing_inames:
+        return kernel
 
     from loopy.transform.privatize import privatize_temporaries_with_inames
     return privatize_temporaries_with_inames(kernel, privatizing_inames)
-
-# }}}
-
-
-# {{{ find idempotence ("boostability") of instructions
-
-def find_idempotence(kernel):
-    logger.debug("%s: idempotence" % kernel.name)
-
-    writer_map = kernel.writer_map()
-
-    arg_names = set(arg.name for arg in kernel.args)
-
-    var_names = arg_names | set(six.iterkeys(kernel.temporary_variables))
-
-    reads_map = dict(
-            (insn.id, insn.read_dependency_names() & var_names)
-            for insn in kernel.instructions)
-
-    from collections import defaultdict
-    dep_graph = defaultdict(set)
-
-    for insn in kernel.instructions:
-        dep_graph[insn.id] = set(writer_id
-                for var in reads_map[insn.id]
-                for writer_id in writer_map.get(var, set()))
-
-    # Find SCCs of dep_graph. These are used for checking if the instruction is
-    # in a dependency cycle.
-    from loopy.tools import compute_sccs
-
-    sccs = dict((item, scc)
-            for scc in compute_sccs(dep_graph)
-            for item in scc)
-
-    non_idempotently_updated_vars = set()
-
-    new_insns = []
-    for insn in kernel.instructions:
-        boostable = len(sccs[insn.id]) == 1 and insn.id not in dep_graph[insn.id]
-
-        if not boostable:
-            non_idempotently_updated_vars.update(
-                    insn.assignee_var_names())
-
-        new_insns.append(insn.copy(boostable=boostable))
-
-    # {{{ remove boostability from isns that access non-idempotently updated vars
-
-    new2_insns = []
-    for insn in new_insns:
-        if insn.boostable and bool(
-                non_idempotently_updated_vars & insn.dependency_names()):
-            new2_insns.append(insn.copy(boostable=False))
-        else:
-            new2_insns.append(insn)
-
-    # }}}
-
-    return kernel.copy(instructions=new2_insns)
-
-# }}}
-
-
-# {{{ limit boostability
-
-def limit_boostability(kernel):
-    """Finds out which other inames an instruction's inames occur with
-    and then limits boostability to just those inames.
-    """
-
-    logger.debug("%s: limit boostability" % kernel.name)
-
-    iname_occurs_with = {}
-    for insn in kernel.instructions:
-        insn_inames = kernel.insn_inames(insn)
-        for iname in insn_inames:
-            iname_occurs_with.setdefault(iname, set()).update(insn_inames)
-
-    iname_use_counts = {}
-    for insn in kernel.instructions:
-        for iname in kernel.insn_inames(insn):
-            iname_use_counts[iname] = iname_use_counts.get(iname, 0) + 1
-
-    single_use_inames = set(iname for iname, uc in six.iteritems(iname_use_counts)
-            if uc == 1)
-
-    new_insns = []
-    for insn in kernel.instructions:
-        if insn.boostable is None:
-            raise LoopyError("insn '%s' has undetermined boostability" % insn.id)
-        elif insn.boostable:
-            boostable_into = set()
-            for iname in kernel.insn_inames(insn):
-                boostable_into.update(iname_occurs_with[iname])
-
-            boostable_into -= kernel.insn_inames(insn) | single_use_inames
-
-            # Even if boostable_into is empty, leave boostable flag on--it is used
-            # for boosting into unused hw axes.
-
-            insn = insn.copy(boostable_into=boostable_into)
-        else:
-            insn = insn.copy(boostable_into=set())
-
-        new_insns.append(insn)
-
-    return kernel.copy(instructions=new_insns)
 
 # }}}
 
@@ -2121,25 +2115,25 @@ def check_atomic_loads(kernel):
 
     # find atomic variables
     atomicity_candidates = (
-            set(v.name for v in six.itervalues(kernel.temporary_variables)
-                if isinstance(v.dtype, AtomicType))
+            {v.name for v in kernel.temporary_variables.values()
+                if isinstance(v.dtype, AtomicType)}
             |
-            set(v.name for v in kernel.args
+            {v.name for v in kernel.args
                 if isinstance(v, ArrayBase)
-                and isinstance(v.dtype, AtomicType)))
+                and isinstance(v.dtype, AtomicType)})
 
     new_insns = []
     for insn in kernel.instructions:
         if isinstance(insn, Assignment):
             # look for atomic variables
-            atomic_accesses = set(a.var_name for a in insn.atomicity)
+            atomic_accesses = {a.var_name for a in insn.atomicity}
             accessed_atomic_vars = (insn.dependency_names() & atomicity_candidates)\
-                - set([insn.assignee_var_names()[0]])
+                - {insn.assignee_var_names()[0]}
             if not accessed_atomic_vars <= atomic_accesses:
                 #if we're missing some
                 missed = accessed_atomic_vars - atomic_accesses
                 for x in missed:
-                    if set([x]) & atomicity_candidates:
+                    if {x} & atomicity_candidates:
                         insn = insn.copy(
                             atomicity=insn.atomicity + (AtomicLoad(x),))
 
@@ -2157,78 +2151,97 @@ class ArgDescrInferenceMapper(RuleAwareIdentityMapper):
     Infers the :attr:`loopy`
     """
 
-    def __init__(self, rule_mapping_context, caller_kernel,
-            callables_table):
-        super(ArgDescrInferenceMapper, self).__init__(
-                rule_mapping_context)
+    def __init__(self, rule_mapping_context, caller_kernel, clbl_inf_ctx):
+        super().__init__(rule_mapping_context)
         self.caller_kernel = caller_kernel
-        self.callables_table = callables_table
+        self.clbl_inf_ctx = clbl_inf_ctx
 
-    def map_call(self, expr, expn_state, **kwargs):
-        from pymbolic.primitives import Call, CallWithKwargs
+    def map_call(self, expr, expn_state, assignees=None):
+        from pymbolic.primitives import Call, Variable
         from loopy.kernel.function_interface import ValueArgDescriptor
-        from loopy.symbolic import ResolvedFunction, SubArrayRef
+        from loopy.symbolic import ResolvedFunction
+        from loopy.kernel.array import ArrayBase
+        from loopy.kernel.data import ValueArg
+        from pymbolic.mapper.substitutor import make_subst_func
+        from loopy.symbolic import SubstitutionMapper
+        from loopy.kernel.function_interface import get_arg_descriptor_for_expression
 
         if not isinstance(expr.function, ResolvedFunction):
             # ignore if the call is not to a ResolvedFunction
-            return super(ArgDescrInferenceMapper, self).map_call(expr, expn_state)
+            return super().map_call(expr, expn_state)
 
-        if isinstance(expr, Call):
-            kw_parameters = {}
-        else:
-            assert isinstance(expr, CallWithKwargs)
-            kw_parameters = expr.kw_parameters
+        arg_id_to_val = dict(enumerate(expr.parameters))
 
-        # descriptors for the args and kwargs of the Call
-        arg_id_to_descr = dict((i, par.get_array_arg_descriptor(self.caller_kernel))
-                if isinstance(par, SubArrayRef) else (i, ValueArgDescriptor())
-                for i, par in tuple(enumerate(expr.parameters)) +
-                tuple(kw_parameters.items()))
-
-        assignee_id_to_descr = {}
-
-        if 'assignees' in kwargs:
+        if assignees is not None:
             # If supplied with assignees then this is a CallInstruction
-            assignees = kwargs['assignees']
-            assert isinstance(assignees, tuple)
-            for i, par in enumerate(assignees):
-                if isinstance(par, SubArrayRef):
-                    assignee_id_to_descr[-i-1] = (
-                            par.get_array_arg_descriptor(self.caller_kernel))
-                else:
-                    assignee_id_to_descr[-i-1] = ValueArgDescriptor()
+            for i, arg in enumerate(assignees):
+                arg_id_to_val[-i-1] = arg
 
-        # gathering all the descriptors
-        combined_arg_id_to_descr = arg_id_to_descr.copy()
-        combined_arg_id_to_descr.update(assignee_id_to_descr)
+        arg_id_to_descr = {
+            arg_id: get_arg_descriptor_for_expression(self.caller_kernel, arg)
+            for arg_id, arg in arg_id_to_val.items()}
+        clbl = self.clbl_inf_ctx[expr.function.name]
+
+        # {{{ translating descriptor expressions to the callable's namespace
+
+        deps_as_params = []
+        subst_map = {}
+
+        deps = frozenset().union(*(descr.depends_on()
+                                   for descr in arg_id_to_descr.values()))
+
+        assert deps <= self.caller_kernel.all_variable_names()
+
+        for dep in deps:
+            caller_arg = self.caller_kernel.arg_dict.get(dep, (self.caller_kernel
+                                                               .temporary_variables
+                                                               .get(dep)))
+            if not (isinstance(caller_arg, ValueArg)
+                    or (isinstance(caller_arg, ArrayBase)
+                        and caller_arg.shape == ())):
+                raise NotImplementedError(f"Obtained '{dep}' as a dependency for"
+                        f" call '{expr.function.name}' which is not a scalar.")
+
+            clbl, callee_name = clbl.with_added_arg(caller_arg.dtype,
+                                                    ValueArgDescriptor())
+
+            subst_map[dep] = Variable(callee_name)
+            deps_as_params.append(Variable(dep))
+
+        mapper = SubstitutionMapper(make_subst_func(subst_map))
+        arg_id_to_descr = {id_: descr.map_expr(mapper)
+                           for id_, descr in arg_id_to_descr.items()}
+
+        # }}}
 
         # specializing the function according to the parameter description
-        in_knl_callable = self.callables_table[expr.function.name]
-        new_in_knl_callable, self.callables_table = (
-                in_knl_callable.with_descrs(
-                    combined_arg_id_to_descr, self.callables_table))
-        self.callables_table, new_func_id = (
-                self.callables_table.with_callable(
-                    expr.function.function,
-                    new_in_knl_callable))
+        new_clbl, self.clbl_inf_ctx = clbl.with_descrs(arg_id_to_descr,
+                                                       self.clbl_inf_ctx)
 
-        if isinstance(expr, Call):
-            return Call(
-                    ResolvedFunction(new_func_id),
-                    tuple(self.rec(child, expn_state)
-                    for child in expr.parameters))
-        else:
-            assert isinstance(expr, CallWithKwargs)
-            return CallWithKwargs(
-                    ResolvedFunction(new_func_id),
-                    tuple(self.rec(child, expn_state)
-                        for child in expr.parameters),
-                    dict(
-                        (key, self.rec(val, expn_state))
-                        for key, val in six.iteritems(kw_parameters))
-                    )
+        self.clbl_inf_ctx, new_func_id = (self.clbl_inf_ctx
+                                          .with_callable(expr.function.function,
+                                                         new_clbl))
 
-    map_call_with_kwargs = map_call
+        return Call(ResolvedFunction(new_func_id),
+                    tuple(self.rec(child, expn_state)
+                          for child in expr.parameters)
+                    + tuple(deps_as_params))
+
+    def map_call_with_kwargs(self, expr):
+        # See https://github.com/inducer/loopy/pull/323
+        raise NotImplementedError
+
+    def __call__(self, expr, kernel, insn, assignees=None):
+        from loopy.kernel.data import InstructionBase
+        from loopy.symbolic import IdentityMapper, ExpansionState
+        assert insn is None or isinstance(insn, InstructionBase)
+
+        return IdentityMapper.__call__(self, expr,
+                ExpansionState(
+                    kernel=kernel,
+                    instruction=insn,
+                    stack=(),
+                    arg_context={}), assignees=assignees)
 
     def map_kernel(self, kernel):
 
@@ -2238,11 +2251,12 @@ class ArgDescrInferenceMapper(RuleAwareIdentityMapper):
             if isinstance(insn, CallInstruction):
                 # In call instructions the assignees play an important in
                 # determining the arg_id_to_descr
-                new_insns.append(insn.with_transformed_expressions(
-                    self, kernel, insn, assignees=insn.assignees))
+                mapper = partial(self, kernel=kernel, insn=insn,
+                        assignees=insn.assignees)
+                new_insns.append(insn.with_transformed_expressions(mapper))
             elif isinstance(insn, MultiAssignmentBase):
-                new_insns.append(insn.with_transformed_expressions(
-                    self, kernel, insn))
+                mapper = partial(self, kernel=kernel, insn=insn)
+                new_insns.append(insn.with_transformed_expressions(mapper))
             elif isinstance(insn, (_DataObliviousInstruction, CInstruction)):
                 new_insns.append(insn)
             else:
@@ -2255,7 +2269,7 @@ class ArgDescrInferenceMapper(RuleAwareIdentityMapper):
 def traverse_to_infer_arg_descr(kernel, callables_table):
     """
     Returns a copy of *kernel* with the argument shapes and strides matching for
-    scoped functions in the *kernel*. Refer
+    resolved functions in the *kernel*. Refer
     :meth:`loopy.kernel.function_interface.InKernelCallable.with_descrs`.
 
     .. note::
@@ -2273,7 +2287,7 @@ def traverse_to_infer_arg_descr(kernel, callables_table):
     descr_inferred_kernel = rule_mapping_context.finish_kernel(
             arg_descr_inf_mapper.map_kernel(kernel))
 
-    return descr_inferred_kernel, arg_descr_inf_mapper.callables_table
+    return descr_inferred_kernel, arg_descr_inf_mapper.clbl_inf_ctx
 
 
 def infer_arg_descr(program):
@@ -2282,23 +2296,68 @@ def infer_arg_descr(program):
     :attr:`loopy.InKernelCallable.arg_id_to_descr` inferred for all the
     callables.
     """
-    root_kernel_callable = program.callables_table[program.name]
-    old_callables_count = program.callables_table.callables_count
-    callables_table = (
-            program.callables_table.with_edit_callables_mode())
-    root_kernel = program.root_kernel
+    from loopy.translation_unit import make_clbl_inf_ctx, resolve_callables
+    from loopy.kernel.array import ArrayBase
+    from loopy.kernel.function_interface import (ArrayArgDescriptor,
+            ValueArgDescriptor)
+    from loopy import auto, ValueArg
 
-    new_root_kernel, callables_table = traverse_to_infer_arg_descr(
-            root_kernel, callables_table)
-    new_root_kernel_callable = root_kernel_callable.copy(
-            subkernel=new_root_kernel)
-    callables_table, _ = callables_table.with_callable(program.name,
-            new_root_kernel_callable)
+    program = resolve_callables(program)
 
-    callables_table = callables_table.with_exit_edit_callables_mode(
-            old_callables_count)
+    clbl_inf_ctx = make_clbl_inf_ctx(program.callables_table,
+                                     program.entrypoints)
 
-    return program.copy(callables_table=callables_table)
+    for e in program.entrypoints:
+        def _tuple_or_None(s):
+            if isinstance(s, tuple):
+                return s
+            elif s in [None, auto]:
+                return s
+            else:
+                return s,
+
+        arg_id_to_descr = {}
+        for arg in program[e].args:
+            if isinstance(arg, ArrayBase):
+                if arg.shape not in (None, auto):
+                    arg_id_to_descr[arg.name] = ArrayArgDescriptor(
+                            _tuple_or_None(arg.shape), arg.address_space,
+                            arg.dim_tags)
+            elif isinstance(arg, ValueArg):
+                arg_id_to_descr[arg.name] = ValueArgDescriptor()
+            else:
+                raise NotImplementedError()
+        new_callable, clbl_inf_ctx = program.callables_table[e].with_descrs(
+                arg_id_to_descr, clbl_inf_ctx)
+        clbl_inf_ctx, new_name = clbl_inf_ctx.with_callable(e, new_callable,
+                                                            is_entrypoint=True)
+
+    return clbl_inf_ctx.finish_program(program)
+
+# }}}
+
+
+# {{{  inline_kernels_with_gbarriers
+
+
+def inline_kernels_with_gbarriers(program):
+    from loopy.kernel.instruction import BarrierInstruction
+    from loopy.transform.callable import inline_callable_kernel
+
+    def has_gbarrier(knl):
+        return any((isinstance(insn, BarrierInstruction)
+                    and insn.synchronization_kind == "global")
+                   for insn in knl.instructions)
+
+    callees_to_inline = [name for name, knl_clbl in program.callables_table.items()
+                         if (isinstance(knl_clbl, CallableKernel)
+                             and has_gbarrier(knl_clbl.subkernel))]
+
+    for callee_to_inline in callees_to_inline:
+        program = inline_callable_kernel(program, callee_to_inline)
+
+    return program
+
 
 # }}}
 
@@ -2310,25 +2369,8 @@ preprocess_cache = WriteOncePersistentDict(
 
 def preprocess_single_kernel(kernel, callables_table, device=None):
     from loopy.kernel import KernelState
-    if kernel.state >= KernelState.PREPROCESSED:
-        return kernel
 
-    # {{{ cache retrieval
-
-    from loopy import CACHING_ENABLED
-    if CACHING_ENABLED:
-        input_kernel = kernel
-
-        try:
-            result = preprocess_cache[kernel]
-            logger.debug("%s: preprocess cache hit" % kernel.name)
-            return result
-        except KeyError:
-            pass
-
-    # }}}
-
-    logger.info("%s: preprocess start" % kernel.name)
+    prepro_logger = ProcessLogger(logger, "%s: preprocess" % kernel.name)
 
     from loopy.check import check_identifiers_in_subst_rules
     check_identifiers_in_subst_rules(kernel)
@@ -2336,16 +2378,13 @@ def preprocess_single_kernel(kernel, callables_table, device=None):
     # {{{ check that there are no l.auto-tagged inames
 
     from loopy.kernel.data import AutoLocalIndexTagBase
-    for iname, tags in six.iteritems(kernel.iname_to_tags):
-        if (filter_iname_tags_by_type(tags, AutoLocalIndexTagBase)
-                 and iname in kernel.all_inames()):
+    for name, iname in kernel.inames.items():
+        if (filter_iname_tags_by_type(iname.tags, AutoLocalIndexTagBase)
+                 and name in kernel.all_inames()):
             raise LoopyError("kernel with automatically-assigned "
                     "local axes passed to preprocessing")
 
     # }}}
-
-    from loopy.transform.subst import expand_subst
-    kernel = expand_subst(kernel)
 
     # Ordering restriction:
     # Type inference and reduction iname uniqueness don't handle substitutions.
@@ -2353,20 +2392,6 @@ def preprocess_single_kernel(kernel, callables_table, device=None):
 
     check_for_writes_to_predicates(kernel)
     check_reduction_iname_uniqueness(kernel)
-
-    from loopy.kernel.creation import apply_single_writer_depencency_heuristic
-    kernel = apply_single_writer_depencency_heuristic(kernel)
-
-    # Ordering restrictions:
-    #
-    # - realize_reduction must happen after type inference because it needs
-    #   to be able to determine the types of the reduced expressions.
-    #
-    # - realize_reduction must happen after default dependencies are added
-    #   because it manipulates the depends_on field, which could prevent
-    #   defaults from being applied.
-    kernel = realize_reduction_for_single_kernel(kernel,
-            callables_table, unknown_types_ok=False)
 
     # Ordering restriction:
     # add_axes_to_temporaries_for_ilp because reduction accumulators
@@ -2376,78 +2401,53 @@ def preprocess_single_kernel(kernel, callables_table, device=None):
 
     kernel = find_temporary_address_space(kernel)
 
-    # boostability should be removed in 2017.x.
-    kernel = find_idempotence(kernel)
-    kernel = limit_boostability(kernel)
-
     # check for atomic loads, much easier to do here now that the dependencies
     # have been established
     kernel = check_atomic_loads(kernel)
 
     kernel = kernel.target.preprocess(kernel)
 
-    logger.info("%s: preprocess done" % kernel.name)
-
     kernel = kernel.copy(
             state=KernelState.PREPROCESSED)
 
-    # {{{ prepare for caching
-
-    # PicklableDtype instances for example need to know the target they're working
-    # towards in order to pickle and unpickle them. This is the first pass that
-    # uses caching, so we need to be ready to pickle. This means propagating
-    # this target information.
-
-    if CACHING_ENABLED:
-        input_kernel = prepare_for_caching(input_kernel)
-
-    kernel = prepare_for_caching(kernel)
-
-    # }}}
-
-    if CACHING_ENABLED:
-        preprocess_cache.store_if_not_present(input_kernel, kernel)
+    prepro_logger.done()
 
     return kernel
 
 
-# {{{ hw axes inference
-
-def infer_hw_axes_sizes(program):
-    """
-    Returns copy of *program* with the hardware axes sizes inferred.
-
-    .. note::
-
-        - Firstly, computes the collective hardware axes sizes from all the
-          callable kernels.
-        - Then, overrides the grid sizes of all the callable kernels to the
-          collective value.
-    """
-
-    local_size, global_size = program.get_grid_size_upper_bounds()
-
-    resolved_function_with_hw_axes_sizes_inferred = {}
-
-    for func_id, in_knl_callable in (
-            program.callables_table.items()):
-        if func_id == program.name:
-            resolved_function_with_hw_axes_sizes_inferred[func_id] = (
-                    in_knl_callable)
-        else:
-            resolved_function_with_hw_axes_sizes_inferred[func_id] = (
-                    in_knl_callable.with_hw_axes_sizes(local_size, global_size))
-
-    new_callables_table = (
-            program.callables_table.copy(
-                resolved_functions=resolved_function_with_hw_axes_sizes_inferred))
-
-    return program.copy(callables_table=new_callables_table)
-
-# }}}
-
-
 def preprocess_program(program, device=None):
+
+    # {{{ cache retrieval
+
+    from loopy import CACHING_ENABLED
+    if CACHING_ENABLED:
+        input_program = program
+
+        try:
+            result = preprocess_cache[program]
+            logger.debug(f"program with entrypoints: {program.entrypoints}"
+                    " preprocess cache hit")
+            return result
+        except KeyError:
+            pass
+
+    # }}}
+
+    from loopy.kernel import KernelState
+    if program.state >= KernelState.PREPROCESSED:
+        return program
+
+    if len([clbl for clbl in program.callables_table.values() if
+            isinstance(clbl, CallableKernel)]) == 1:
+        program = program.with_entrypoints(",".join(clbl.name for clbl in
+            program.callables_table.values() if isinstance(clbl,
+                CallableKernel)))
+
+    if not program.entrypoints:
+        raise LoopyError("Translation unit did not receive any entrypoints")
+
+    from loopy.translation_unit import resolve_callables
+    program = resolve_callables(program)
 
     if device is not None:
         # FIXME: Time to remove this? (Git blame shows 5 years ago)
@@ -2456,6 +2456,23 @@ def preprocess_program(program, device=None):
                 DeprecationWarning, stacklevel=2)
 
     program = infer_unknown_types(program, expect_completion=False)
+
+    from loopy.transform.subst import expand_subst
+    program = expand_subst(program)
+
+    from loopy.kernel.creation import apply_single_writer_depencency_heuristic
+    program = apply_single_writer_depencency_heuristic(program)
+
+    # Ordering restrictions:
+    #
+    # - realize_reduction must happen after type inference because it needs
+    #   to be able to determine the types of the reduced expressions.
+    #
+    # - realize_reduction must happen after default dependencies are added
+    #   because it manipulates the depends_on field, which could prevent
+    #   defaults from being applied.
+
+    program = realize_reduction(program, unknown_types_ok=False)
 
     # {{{ preprocess callable kernels
 
@@ -2466,7 +2483,7 @@ def preprocess_program(program, device=None):
     #
     # [1] https://docs.python.org/3/library/stdtypes.html#dictionary-view-objects
 
-    new_resolved_functions = {}
+    new_callables = {}
     for func_id, in_knl_callable in program.callables_table.items():
         if isinstance(in_knl_callable, CallableKernel):
             new_subkernel = preprocess_single_kernel(
@@ -2480,18 +2497,36 @@ def preprocess_program(program, device=None):
             raise NotImplementedError("Unknown callable type %s." % (
                 type(in_knl_callable).__name__))
 
-        new_resolved_functions[func_id] = in_knl_callable
+        new_callables[func_id] = in_knl_callable
 
-    new_callables_table = program.callables_table.copy(
-            resolved_functions=new_resolved_functions)
-    program = program.copy(callables_table=new_callables_table)
+    program = program.copy(callables_table=new_callables)
 
     # }}}
 
     # infer arg descrs of the callables
     program = infer_arg_descr(program)
 
-    program = infer_hw_axes_sizes(program)
+    # Ordering restriction:
+    # callees with gbarrier in them must be inlined after inferrring arg_descr.
+    # inline_kernels_with_gbarriers does not recursively inline the callees.
+    program = inline_kernels_with_gbarriers(program)
+
+    # {{{ prepare for caching
+
+    # PicklableDtype instances for example need to know the target they're working
+    # towards in order to pickle and unpickle them. This is the first pass that
+    # uses caching, so we need to be ready to pickle. This means propagating
+    # this target information.
+
+    if CACHING_ENABLED:
+        input_program = prepare_for_caching(input_program)
+
+    program = prepare_for_caching(program)
+
+    # }}}
+
+    if CACHING_ENABLED:
+        preprocess_cache.store_if_not_present(input_program, program)
 
     return program
 

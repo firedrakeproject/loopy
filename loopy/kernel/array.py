@@ -1,6 +1,5 @@
 """Implementation tagging of array axes."""
 
-from __future__ import division, absolute_import
 
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
@@ -26,16 +25,32 @@ THE SOFTWARE.
 
 import re
 
-import six
-from six.moves import range, zip
-from six import iteritems
-
 from pytools import ImmutableRecord, memoize_method
+from pytools.tag import Taggable
 
 import numpy as np  # noqa
 
 from loopy.diagnostic import LoopyError
 from loopy.tools import is_integer
+
+
+__doc__ = """
+.. currentmodule:: loopy.kernel.array
+
+.. autoclass:: ArrayDimImplementationTag
+
+.. autoclass:: _StrideArrayDimTagBase
+
+.. autoclass:: FixedStrideArrayDimTag
+
+.. autoclass:: ComputedStrideArrayDimTag
+
+.. autoclass:: SeparateArrayArrayDimTag
+
+.. autoclass:: VectorArrayDimTag
+
+.. autofunction:: parse_array_dim_tags
+"""
 
 
 # {{{ array dimension tags
@@ -69,10 +84,12 @@ class _StrideArrayDimTagBase(ArrayDimImplementationTag):
         The lowest nesting level varies fastest when viewed
         in linear memory.
 
-        May be None on :class:`FixedStrideArrayDimTag`, in which
-        case no :class:`ComputedStrideArrayDimTag` instances may
-        occur.
+        May be None on :class:`FixedStrideArrayDimTag`, in which case no
+        :class:`ComputedStrideArrayDimTag` instances may occur.
     """
+
+    def depends_on(self):
+        raise NotImplementedError()
 
 
 class FixedStrideArrayDimTag(_StrideArrayDimTagBase):
@@ -123,7 +140,21 @@ class FixedStrideArrayDimTag(_StrideArrayDimTagBase):
         return self.stringify(True)
 
     def map_expr(self, mapper):
+        from loopy.kernel.data import auto
+
+        if self.stride is auto:
+            # lp.auto not an expr => do not map
+            return self
+
         return self.copy(stride=mapper(self.stride))
+
+    def depends_on(self):
+        from loopy.kernel.data import auto
+        from loopy.symbolic import DependencyMapper
+        if self.stride is auto:
+            return frozenset()
+
+        return DependencyMapper(composite_leaves=auto)(self.stride)
 
 
 class ComputedStrideArrayDimTag(_StrideArrayDimTagBase):
@@ -132,8 +163,8 @@ class ComputedStrideArrayDimTag(_StrideArrayDimTagBase):
 
         :attr:`ArrayBase.dtype` granularity to which to pad this dimension
 
-    This type of stride arg dim gets converted to :class:`FixedStrideArrayDimTag`
-    on input to :class:`ArrayBase` subclasses.
+    This type of stride arg dim gets converted to
+    :class:`FixedStrideArrayDimTag` on input to :class:`ArrayBase` subclasses.
     """
 
     def __init__(self, layout_nesting_level, pad_to=None, target_axis=0, ):
@@ -159,6 +190,9 @@ class ComputedStrideArrayDimTag(_StrideArrayDimTagBase):
     def map_expr(self, mapper):
         return self
 
+    def depends_on(self):
+        return frozenset()
+
 
 class SeparateArrayArrayDimTag(ArrayDimImplementationTag):
     def stringify(self, include_target_axis):
@@ -170,6 +204,9 @@ class SeparateArrayArrayDimTag(ArrayDimImplementationTag):
     def map_expr(self, mapper):
         return self
 
+    def depends_on(self):
+        return frozenset()
+
 
 class VectorArrayDimTag(ArrayDimImplementationTag):
     def stringify(self, include_target_axis):
@@ -180,6 +217,9 @@ class VectorArrayDimTag(ArrayDimImplementationTag):
 
     def map_expr(self, mapper):
         return self
+
+    def depends_on(self):
+        return frozenset()
 
 
 NESTING_LEVEL_RE = re.compile(r"^N([-0-9]+)(?::(.*)|)$")
@@ -304,7 +344,7 @@ def parse_array_dim_tags(dim_tags, n_axes=None, use_increasing_target_axes=False
         assert n_axes == len(dim_names)
 
         dim_tags = [None]*n_axes
-        for dim_name, val in six.iteritems(dim_tags_dict):
+        for dim_name, val in dim_tags_dict.items():
             try:
                 dim_idx = dim_names.index(dim_name)
             except ValueError:
@@ -370,7 +410,7 @@ def parse_array_dim_tags(dim_tags, n_axes=None, use_increasing_target_axes=False
 
     # {{{ check contiguity of nesting levels
 
-    for target_axis, ta_nesting_levels in iteritems(nesting_levels):
+    for target_axis, ta_nesting_levels in nesting_levels.items():
         if sorted(ta_nesting_levels) != list(
                 range(
                     min(ta_nesting_levels),
@@ -544,7 +584,7 @@ def _parse_shape_or_strides(x):
     return tuple(_pymbolic_parse_if_necessary(xi) for xi in x)
 
 
-class ArrayBase(ImmutableRecord):
+class ArrayBase(ImmutableRecord, Taggable):
     """
     .. attribute :: name
 
@@ -587,7 +627,8 @@ class ArrayBase(ImmutableRecord):
     .. attribute:: offset
 
         Offset from the beginning of the buffer to the point from
-            which the strides are counted. May be one of
+        which the strides are counted, in units of the :attr:`dtype`.
+        May be one of
 
             * 0 or None
             * a string (that is interpreted as an argument name).
@@ -623,6 +664,14 @@ class ArrayBase(ImmutableRecord):
 
         .. versionadded:: 2018.1
 
+    .. attribute:: tags
+
+        A (possibly empty) frozenset of instances of
+        :class:`pytools.tag.Tag` intended for
+        consumption by an application.
+
+        .. versionadded:: 2020.2.2
+
     .. automethod:: __init__
     .. automethod:: __eq__
     .. automethod:: num_user_axes
@@ -639,8 +688,7 @@ class ArrayBase(ImmutableRecord):
 
     def __init__(self, name, dtype=None, shape=None, dim_tags=None, offset=0,
             dim_names=None, strides=None, order=None, for_atomic=False,
-            target=None, alignment=None,
-            **kwargs):
+            target=None, alignment=None, tags=None, **kwargs):
         """
         All of the following (except *name*) are optional.
         Specify either strides or shape.
@@ -653,7 +701,7 @@ class ArrayBase(ImmutableRecord):
             or a string which can be parsed into the previous form.
 
         :arg dim_tags: A comma-separated list of tags as understood by
-            :func:`parse_array_dim_tag`.
+            :func:`loopy.kernel.array.parse_array_dim_tags`.
 
         :arg strides: May be one of the following:
 
@@ -678,7 +726,8 @@ class ArrayBase(ImmutableRecord):
             using atomic-capable data types.
         :arg offset: (See :attr:`offset`)
         :arg alignment: memory alignment in bytes
-
+        :arg tags: An instance of or an Iterable of instances of
+            :class:`pytools.tag.Tag`.
         """
 
         for kwarg_name in kwargs:
@@ -836,6 +885,7 @@ class ArrayBase(ImmutableRecord):
                 alignment=alignment,
                 for_atomic=for_atomic,
                 target=target,
+                tags=tags,
                 **kwargs)
 
     def __eq__(self, other):
@@ -881,7 +931,7 @@ class ArrayBase(ImmutableRecord):
             if self.dim_names is not None:
                 info_entries.append("shape: (%s)"
                         % ", ".join(
-                            "%s:%s" % (n, i)
+                            f"{n}:{i}"
                             for n, i in zip(self.dim_names, self.shape)))
             else:
                 info_entries.append("shape: (%s)"
@@ -895,7 +945,7 @@ class ArrayBase(ImmutableRecord):
         if self.offset:
             info_entries.append("offset: %s" % self.offset)
 
-        return "%s: %s" % (self.name, ", ".join(info_entries))
+        return "{}: {}".format(self.name, ", ".join(info_entries))
 
     def __str__(self):
         return self.stringify(include_typename=True)
@@ -935,7 +985,8 @@ class ArrayBase(ImmutableRecord):
         return len(target_axes)
 
     def num_user_axes(self, require_answer=True):
-        if self.shape is not None:
+        from loopy import auto
+        if self.shape not in (None, auto):
             return len(self.shape)
         if self.dim_tags is not None:
             return len(self.dim_tags)
@@ -1088,8 +1139,7 @@ class ArrayBase(ImmutableRecord):
                                 offset_for_name=full_name,
                                 is_written=False)
 
-                for sa in stride_args:
-                    yield sa
+                yield from stride_args
 
                 # }}}
 
@@ -1115,13 +1165,12 @@ class ArrayBase(ImmutableRecord):
                     new_stride_arg_axes = stride_arg_axes
                     new_stride_axis = dim_tag.stride
 
-                for res in gen_decls(name_suffix,
+                yield from gen_decls(name_suffix,
                         shape + (new_shape_axis,), strides + (new_stride_axis,),
                         unvec_shape + (new_shape_axis,),
                         unvec_strides + (new_stride_axis,),
                         new_stride_arg_axes,
-                        dtype, user_index + (None,)):
-                    yield res
+                        dtype, user_index + (None,))
 
             elif isinstance(dim_tag, SeparateArrayArrayDimTag):
                 shape_i = array_shape[user_axis]
@@ -1131,11 +1180,10 @@ class ArrayBase(ImmutableRecord):
                                 self.name, user_axis))
 
                 for i in range(shape_i):
-                    for res in gen_decls(name_suffix + "_s%d" % i,
+                    yield from gen_decls(name_suffix + "_s%d" % i,
                             shape, strides, unvec_shape, unvec_strides,
                             stride_arg_axes, dtype,
-                            user_index + (i,)):
-                        yield res
+                            user_index + (i,))
 
             elif isinstance(dim_tag, VectorArrayDimTag):
                 shape_i = array_shape[user_axis]
@@ -1144,26 +1192,24 @@ class ArrayBase(ImmutableRecord):
                             "integer axis %d (0-based)" % (
                                 self.name, user_axis))
 
-                for res in gen_decls(name_suffix,
+                yield from gen_decls(name_suffix,
                         shape, strides,
                         unvec_shape + (shape_i,),
                         # vectors always have stride 1
                         unvec_strides + (1,),
                         stride_arg_axes,
                         target.vector_dtype(dtype, shape_i),
-                        user_index + (None,)):
-                    yield res
+                        user_index + (None,))
 
             else:
                 raise LoopyError("unsupported array dim implementation tag '%s' "
                         "in array '%s'" % (dim_tag, self.name))
 
-        for res in gen_decls(name_suffix="",
+        yield from gen_decls(name_suffix="",
                 shape=(), strides=(),
                 unvec_shape=(), unvec_strides=(),
                 stride_arg_axes=(),
-                dtype=self.dtype, user_index=()):
-            yield res
+                dtype=self.dtype, user_index=())
 
     @memoize_method
     def sep_shape(self):
