@@ -798,7 +798,7 @@ def test_kc_with_floor_div_in_expr(ctx_factory, inline):
     import loopy as lp
 
     ctx = ctx_factory()
-    callee = lp.make_kernel(
+    callee = lp.make_function(
             "{[i]: 0<=i<10}",
             """
             x[i] = 2*x[i]
@@ -810,10 +810,11 @@ def test_kc_with_floor_div_in_expr(ctx_factory, inline):
             [i]: x[2*(i//2) + (i%2)] = callee_with_update([i]: x[i])
             """)
 
-    if inline:
-        knl = lp.inline_callable_kernel(knl, "thrice")
-
     knl = lp.merge([knl, callee])
+
+    if inline:
+        knl = lp.inline_callable_kernel(knl, "callee_with_update")
+
     lp.auto_test_vs_ref(knl, ctx, knl)
 
 
