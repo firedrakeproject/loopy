@@ -892,6 +892,11 @@ class ArrayBase(ImmutableRecord, Taggable):
                 tags=tags,
                 **kwargs)
 
+    # Without this __hash__ is set to None because this class overrides __eq__.
+    # Source: https://docs.python.org/3/reference/datamodel.html#object.__hash__
+    def __hash__(self):
+        return super().__hash__()
+
     def __eq__(self, other):
         from loopy.symbolic import (
                 is_tuple_of_expressions_equal as istoee,
@@ -1016,6 +1021,7 @@ class ArrayBase(ImmutableRecord, Taggable):
         """Return a copy of self with all expressions replaced with what *mapper*
         transformed them into.
         """
+        changed = False
         kwargs = {}
         import loopy as lp
 
@@ -1026,15 +1032,23 @@ class ArrayBase(ImmutableRecord, Taggable):
                 else:
                     return mapper(s)
 
-            kwargs["shape"] = tuple(none_pass_mapper(s) for s in self.shape)
+            new_shape = tuple(none_pass_mapper(s) for s in self.shape)
+            kwargs["shape"] = new_shape
+            if new_shape != self.shape:
+                changed = True
 
         if self.dim_tags is not None:
-            kwargs["dim_tags"] = [dim_tag.map_expr(mapper)
+            new_dim_tags = [dim_tag.map_expr(mapper)
                     for dim_tag in self.dim_tags]
+            kwargs["dim_tags"] = new_dim_tags
+            if new_dim_tags != self.dim_tags:
+                changed = True
 
         # offset is not an expression, do not map.
-
-        return self.copy(**kwargs)
+        if changed:
+            return self.copy(**kwargs)
+        else:
+            return self
 
     def vector_size(self, target):
         """Return the size of the vector type used for the array
@@ -1275,6 +1289,29 @@ class AccessInfo(ImmutableRecord):
     """
 
 
+def _apply_offset(sub, array_name, ary):
+    """
+    Helper for :func:`get_access_info`.
+    Augments *ary*'s subscript index expression (*sub*) with its offset info.
+
+    :arg ary: An instance of :class:`ArrayBase`.
+    :arg array_name: Name to reference *ary* by.
+    """
+    import loopy as lp
+    from pymbolic import var
+
+    if ary.offset:
+        if ary.offset is lp.auto:
+            return var(array_name+"_offset") + sub
+        elif isinstance(ary.offset, str):
+            return var(ary.offset) + sub
+        else:
+            # assume it's an expression
+            return ary.offset + sub
+    else:
+        return sub
+
+
 def get_access_info(target, ary, index, eval_expr, vectorization_info):
     """
     :arg ary: an object of type :class:`ArrayBase`
@@ -1304,20 +1341,6 @@ def get_access_info(target, ary, index, eval_expr, vectorization_info):
 
         return result
 
-    def apply_offset(sub):
-        import loopy as lp
-
-        if ary.offset:
-            if ary.offset is lp.auto:
-                return var(array_name+"_offset") + sub
-            elif isinstance(ary.offset, str):
-                return var(ary.offset) + sub
-            else:
-                # assume it's an expression
-                return ary.offset + sub
-        else:
-            return sub
-
     if not isinstance(index, tuple):
         index = (index,)
 
@@ -1333,7 +1356,7 @@ def get_access_info(target, ary, index, eval_expr, vectorization_info):
 
         return AccessInfo(
                 array_name=array_name,
-                subscripts=(apply_offset(index[0]),),
+                subscripts=(_apply_offset(index[0], array_name, ary),),
                 vector_index=None)
 
     if len(ary.dim_tags) != len(index):
@@ -1405,7 +1428,7 @@ def get_access_info(target, ary, index, eval_expr, vectorization_info):
         if num_target_axes > 1:
             raise NotImplementedError("offsets for multiple image axes")
 
-        subscripts[0] = apply_offset(subscripts[0])
+        subscripts[0] = _apply_offset(subscripts[0], array_name, ary)
 
     return AccessInfo(
             array_name=array_name,

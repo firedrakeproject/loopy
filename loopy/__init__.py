@@ -58,7 +58,8 @@ from loopy.kernel.tools import (
         get_global_barrier_order,
         find_most_recent_global_barrier,
         get_subkernels,
-        get_subkernel_to_insn_id_map)
+        get_subkernel_to_insn_id_map,
+        )
 from loopy.types import to_loopy_type
 from loopy.kernel.creation import make_kernel, UniqueName, make_function
 from loopy.library.reduction import register_reduction_parser
@@ -75,7 +76,7 @@ from loopy.transform.iname import (
         affine_map_inames, find_unused_axis_tag,
         make_reduction_inames_unique,
         has_schedulable_iname_nesting, get_iname_duplication_options,
-        add_inames_to_insn, add_inames_for_unused_hw_axes)
+        add_inames_to_insn, add_inames_for_unused_hw_axes, map_domain)
 
 from loopy.transform.instruction import (
         find_instructions, map_instructions,
@@ -83,7 +84,8 @@ from loopy.transform.instruction import (
         remove_instructions,
         replace_instruction_ids,
         tag_instructions,
-        add_nosync)
+        add_nosync,
+        simplify_indices)
 
 from loopy.transform.data import (
         add_prefetch, change_arg_to_image,
@@ -152,7 +154,7 @@ from loopy.target.pyopencl import PyOpenCLTarget
 from loopy.target.ispc import ISPCTarget
 from loopy.target.numba import NumbaTarget, NumbaCudaTarget
 
-from loopy.tools import Optional
+from loopy.tools import Optional, t_unit_to_python
 
 
 __all__ = [
@@ -201,7 +203,7 @@ __all__ = [
         "affine_map_inames", "find_unused_axis_tag",
         "make_reduction_inames_unique",
         "has_schedulable_iname_nesting", "get_iname_duplication_options",
-        "add_inames_to_insn", "add_inames_for_unused_hw_axes",
+        "add_inames_to_insn", "add_inames_for_unused_hw_axes", "map_domain",
 
         "add_prefetch", "change_arg_to_image",
         "tag_array_axes", "tag_data_axes",
@@ -216,6 +218,7 @@ __all__ = [
         "replace_instruction_ids",
         "tag_instructions",
         "add_nosync",
+        "simplify_indices",
 
         "extract_subst", "expand_subst", "assignment_to_subst",
         "find_rules_matching", "find_one_rule_matching",
@@ -255,6 +258,7 @@ __all__ = [
         "find_most_recent_global_barrier",
         "get_subkernels",
         "get_subkernel_to_insn_id_map",
+        "t_unit_to_python",
 
         "to_loopy_type",
 
@@ -578,10 +582,10 @@ def _set_up_default_target():
         import pyopencl  # noqa
     except ImportError:
         from loopy.target.opencl import OpenCLTarget
-        target = OpenCLTarget()
+        target = OpenCLTarget
     else:
         from loopy.target.pyopencl import PyOpenCLTarget
-        target = PyOpenCLTarget()
+        target = PyOpenCLTarget
 
     set_default_target(target)
 

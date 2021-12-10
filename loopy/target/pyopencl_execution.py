@@ -101,7 +101,7 @@ class PyOpenCLExecutionWrapperGenerator(ExecutionWrapperGeneratorBase):
 
         if not skip_arg_checks:
             for i in range(num_axes):
-                gen("assert _lpy_ustrides_%d > 0, "
+                gen("assert _lpy_ustrides_%d >= 0, "
                         "\"'%s' has negative stride in axis %d\""
                         % (i, arg.name, i))
 
@@ -354,6 +354,9 @@ class PyOpenCLKernelExecutor(KernelExecutorBase):
         """
 
         assert entrypoint is not None
+
+        if __debug__:
+            self.check_for_required_array_arguments(kwargs.keys())
 
         if self.packing_controller is not None:
             kwargs = self.packing_controller(kwargs)

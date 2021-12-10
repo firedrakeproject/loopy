@@ -934,6 +934,35 @@ def test_mem_access_counter_consec():
     assert f32consec == n*m*ell
 
 
+def test_mem_access_counter_global_temps():
+
+    knl = lp.make_kernel(
+            "[n,m,ell] -> {[i,j,k]: 0<=i<n and 0<=j<m and 0<=k<ell}",
+            """
+            <>a[i, j, k] = 3.1
+            <>b[i, j] = 3.2
+            """,
+            assumptions="n,m,ell >= 1")
+    knl = lp.add_and_infer_dtypes(knl, {"a,b": np.float32})
+
+    # Change temporary b address space
+    knl = lp.privatize_temporaries_with_inames(knl, "i,j", "b")
+    knl = lp.set_temporary_scope(knl, "b", "global")
+
+    mem_map = lp.get_mem_access_map(knl, count_redundant_work=True,
+                                    subgroup_size="guess")
+    n = 512
+    m = 256
+    ell = 128
+    params = {"n": n, "m": m, "ell": ell}
+
+    # Count global accesses
+    global_accesses = mem_map.filter_by(
+        mtype=["global"]).sum().eval_with_dict(params)
+
+    assert global_accesses == n*m
+
+
 def test_count_granularity_val_checks():
 
     try:
@@ -1413,8 +1442,8 @@ def test_stats_on_callable_kernel():
             y[:]  = matvec20x20(A[:,:], x[:])
             """,
             [
-                lp.GlobalArg("x,y", shape=(20,), dtype=np.float),
-                lp.GlobalArg("A", shape=(20, 20), dtype=np.float),
+                lp.GlobalArg("x,y", shape=(20,), dtype=np.float64),
+                lp.GlobalArg("A", shape=(20, 20), dtype=np.float64),
                 ],
             name="matvec")
     caller = lp.merge([caller, callee])
@@ -1438,8 +1467,8 @@ def test_stats_on_callable_kernel_within_loop():
             y[i, :]  = matvec20x20(A[:,:], x[i, :])
             """,
             [
-                lp.GlobalArg("x,y", shape=(20, 20), dtype=np.float),
-                lp.GlobalArg("A", shape=(20, 20), dtype=np.float),
+                lp.GlobalArg("x,y", shape=(20, 20), dtype=np.float64),
+                lp.GlobalArg("A", shape=(20, 20), dtype=np.float64),
                 ],
             name="matmat")
     caller = lp.merge([caller, callee])
@@ -1466,8 +1495,8 @@ def test_callable_kernel_with_substitution():
             y[i, :]  = matvec(20, A[:,:], x[i, :])
             """,
             [
-                lp.GlobalArg("x,y", shape=(20, 20), dtype=np.float),
-                lp.GlobalArg("A", shape=(20, 20), dtype=np.float),
+                lp.GlobalArg("x,y", shape=(20, 20), dtype=np.float64),
+                lp.GlobalArg("A", shape=(20, 20), dtype=np.float64),
                 ],
             name="matmat")
     caller = lp.merge([caller, callee])
@@ -1489,7 +1518,7 @@ def test_no_loop_ops():
         d = 2*c + a + b
         """)
 
-    knl = lp.add_dtypes(knl, {"a": np.float, "b": np.float})
+    knl = lp.add_dtypes(knl, {"a": np.float64, "b": np.float64})
 
     op_map = lp.get_op_map(knl, subgroup_size=SGS, count_redundant_work=True,
                            count_within_subscripts=True)

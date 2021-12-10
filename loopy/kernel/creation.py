@@ -165,6 +165,9 @@ def expand_defines(insn, defines, single_valued=True):
 
 
 def expand_defines_in_expr(expr, defines):
+    if not defines:
+        return expr
+
     from pymbolic.primitives import Variable
     from loopy.symbolic import parse
 
@@ -696,23 +699,34 @@ def parse_instructions(instructions, defines):
             continue
 
         elif isinstance(insn, InstructionBase):
+            changed = False
+
+            def checked_intern(s):
+                nonlocal changed
+                interned_s = intern(s)
+                if id(interned_s) != id(s):
+                    changed = True
+                return interned_s
+
             def intern_if_str(s):
                 if isinstance(s, str):
-                    return intern(s)
+                    return checked_intern(s)
                 else:
                     return s
 
-            new_instructions.append(
-                    insn.copy(
-                        id=intern(insn.id) if isinstance(insn.id, str) else insn.id,
-                        depends_on=frozenset(intern_if_str(dep)
-                            for dep in insn.depends_on),
-                        groups=frozenset(intern(grp) for grp in insn.groups),
-                        conflicts_with_groups=frozenset(
-                            intern(grp) for grp in insn.conflicts_with_groups),
-                        within_inames=frozenset(
-                            intern(iname) for iname in insn.within_inames),
-                        ))
+            copy_args = {
+                "id": intern_if_str(insn.id),
+                "depends_on": frozenset(intern_if_str(dep)
+                    for dep in insn.depends_on),
+                "groups": frozenset(checked_intern(grp) for grp in insn.groups),
+                "conflicts_with_groups": frozenset(
+                    checked_intern(grp) for grp in insn.conflicts_with_groups),
+                "within_inames": frozenset(
+                    checked_intern(iname) for iname in insn.within_inames),
+            }
+            if changed:
+                insn = insn.copy(**copy_args)
+            new_instructions.append(insn)
             continue
 
         elif not isinstance(insn, str):
@@ -1332,13 +1346,15 @@ class CSEToAssignmentMapper(IdentityMapper):
         self.add_assignment = add_assignment
         self.expr_to_var = {}
 
-    def map_reduction(self, expr, additional_inames):
+    def map_reduction(self, expr, additional_inames, found):
         additional_inames = additional_inames | frozenset(expr.inames)
+        found[0] = True
 
         return super().map_reduction(
-                expr, additional_inames)
+                expr, additional_inames, found)
 
-    def map_common_subexpression(self, expr, additional_inames):
+    def map_common_subexpression(self, expr, additional_inames, found):
+        found[0] = True
         try:
             return self.expr_to_var[expr.child]
         except KeyError:
@@ -1348,7 +1364,7 @@ class CSEToAssignmentMapper(IdentityMapper):
             else:
                 dtype = None
 
-            child = self.rec(expr.child, additional_inames)
+            child = self.rec(expr.child, additional_inames, found)
             from pymbolic.primitives import Variable
             if isinstance(child, Variable):
                 return child
@@ -1412,12 +1428,15 @@ def expand_cses(instructions, inames_to_dup, cse_prefix="cse_expr"):
 
     for insn, insn_inames_to_dup in zip(instructions, inames_to_dup):
         if isinstance(insn, MultiAssignmentBase):
-            new_insns.append(insn.copy(
-                expression=cseam(insn.expression, frozenset())))
-            new_inames_to_dup.append(insn_inames_to_dup)
+            found = [False]
+            new_expression = cseam(insn.expression, frozenset(), found)
+            if found[0]:
+                new_insns.append(insn.copy(expression=new_expression))
+            else:
+                new_insns.append(insn)
         else:
             new_insns.append(insn)
-            new_inames_to_dup.append(insn_inames_to_dup)
+        new_inames_to_dup.append(insn_inames_to_dup)
 
     return new_insns, new_inames_to_dup, new_temp_vars
 
@@ -1483,8 +1502,7 @@ def create_temporaries(knl, default_order):
                         address_space=lp.auto,
                         base_indices=lp.auto,
                         shape=lp.auto,
-                        order=default_order,
-                        target=knl.target)
+                        order=default_order)
 
             if isinstance(insn, Assignment):
                 insn = insn.copy(temp_var_type=Optional())
@@ -1554,8 +1572,6 @@ def find_shapes_of_vars(knl, var_names, feed_expression):
 
 
 def determine_shapes_of_temporaries(knl):
-    new_temp_vars = knl.temporary_variables.copy()
-
     import loopy as lp
 
     vars_needing_shape_inference = set()
@@ -1620,19 +1636,27 @@ def determine_shapes_of_temporaries(knl):
     # }}}
 
     new_temp_vars = {}
+    changed = False
 
     for tv in knl.temporary_variables.values():
         if tv.name in scalar_vars:
             if tv.base_indices is lp.auto:
                 tv = tv.copy(base_indices=())
+                changed = True
             if tv.shape is lp.auto:
                 tv = tv.copy(shape=())
+                changed = True
         else:
             if tv.base_indices is lp.auto:
                 tv = tv.copy(base_indices=var_to_base_indices[tv.name])
+                changed = True
             if tv.shape is lp.auto:
                 tv = tv.copy(shape=var_to_shape[tv.name])
+                changed = True
         new_temp_vars[tv.name] = tv
+
+    if not changed:
+        return knl
 
     return knl.copy(temporary_variables=new_temp_vars)
 
@@ -1642,6 +1666,9 @@ def determine_shapes_of_temporaries(knl):
 # {{{ expand defines in shapes
 
 def expand_defines_in_shapes(kernel, defines):
+    if not defines:
+        return kernel
+
     from loopy.kernel.array import ArrayBase
     from loopy.kernel.creation import expand_defines_in_expr
 
@@ -1769,15 +1796,19 @@ def resolve_dependencies(knl):
     new_insns = []
 
     for insn in knl.instructions:
-        new_insns.append(insn.copy(
-            depends_on=_resolve_dependencies(
-                "a dependency", knl, insn, insn.depends_on),
-            no_sync_with=frozenset(
+        depends_on = _resolve_dependencies(
+                "a dependency", knl, insn, insn.depends_on)
+        no_sync_with = frozenset(
                 (resolved_insn_id, nosync_scope)
                 for nosync_dep, nosync_scope in insn.no_sync_with
                 for resolved_insn_id in
-                _resolve_dependencies("nosync", knl, insn, (nosync_dep,))),
-            ))
+                _resolve_dependencies("nosync", knl, insn, (nosync_dep,)))
+
+        if depends_on == insn.depends_on and no_sync_with == insn.no_sync_with:
+            new_insn = insn
+        else:
+            new_insn = insn.copy(depends_on=depends_on, no_sync_with=no_sync_with)
+        new_insns.append(new_insn)
 
     return knl.copy(instructions=new_insns)
 
@@ -1811,9 +1842,14 @@ def add_inferred_inames(knl):
     from loopy.kernel.tools import find_all_insn_inames
     insn_inames = find_all_insn_inames(knl)
 
-    return knl.copy(instructions=[
-            insn.copy(within_inames=insn_inames[insn.id])
-            for insn in knl.instructions])
+    instructions = []
+    for insn in knl.instructions:
+        new_within_inames = insn_inames[insn.id]
+        if new_within_inames != insn.within_inames:
+            insn = insn.copy(within_inames=new_within_inames)
+        instructions.append(insn)
+
+    return knl.copy(instructions=instructions)
 
 # }}}
 
@@ -1837,6 +1873,7 @@ def apply_single_writer_depencency_heuristic(kernel, warn_if_used=True):
             insn.id: insn.read_dependency_names() & var_names
             for insn in expanded_kernel.instructions}
 
+    changed = False
     new_insns = []
     for insn in kernel.instructions:
         if not insn.depends_on_is_final:
@@ -1869,8 +1906,9 @@ def apply_single_writer_depencency_heuristic(kernel, warn_if_used=True):
 
             new_deps = frozenset(auto_deps) | depends_on
 
-            if warn_if_used and new_deps != depends_on:
-                warn_with_kernel(kernel, "single_writer_after_creation",
+            if new_deps != depends_on:
+                if warn_if_used:
+                    warn_with_kernel(kernel, "single_writer_after_creation",
                         "The single-writer dependency heuristic added dependencies "
                         "on instruction ID(s) '%s' to instruction ID '%s' after "
                         "kernel creation is complete. This is deprecated and "
@@ -1880,11 +1918,15 @@ def apply_single_writer_depencency_heuristic(kernel, warn_if_used=True):
                         "creation time."
                         % (", ".join(new_deps - depends_on), insn.id))
 
-            insn = insn.copy(depends_on=new_deps)
+                insn = insn.copy(depends_on=new_deps)
+                changed = True
 
         new_insns.append(insn)
 
-    return kernel.copy(instructions=new_insns)
+    if changed:
+        return kernel.copy(instructions=new_insns)
+    else:
+        return kernel
 
 # }}}
 
@@ -2236,7 +2278,7 @@ def make_function(domains, instructions, kernel_data=None, **kwargs):
 
     if target is None:
         from loopy import _DEFAULT_TARGET
-        target = _DEFAULT_TARGET
+        target = _DEFAULT_TARGET()
 
     if flags is not None:
         if options is not None:

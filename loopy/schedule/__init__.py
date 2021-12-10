@@ -24,7 +24,8 @@ THE SOFTWARE.
 from pytools import ImmutableRecord
 import sys
 import islpy as isl
-from loopy.diagnostic import warn_with_kernel, LoopyError  # noqa
+from loopy.diagnostic import (warn_with_kernel, LoopyError,
+                              ScheduleDebugInputError)
 
 from pytools import MinRecursionLimit, ProcessLogger
 
@@ -536,8 +537,13 @@ class ScheduleDebugger:
         self.start_time = time()
 
 
-class ScheduleDebugInput(Exception):
-    pass
+class ScheduleDebugInput(ScheduleDebugInputError):
+    def __init__(self, *args, **kwargs):
+        from warnings import warn
+        warn("ScheduleDebugInput renamed to"
+             " ScheduleDebugInputError,  will be unsupported in"
+             " 2022.", DeprecationWarning, stacklevel=2)
+        super().__init__(*args, **kwargs)
 
 # }}}
 
@@ -1407,7 +1413,7 @@ def generate_loop_schedules_internal(
                 "or enter a number to examine schedules of a "
                 "different length:")
         if inp:
-            raise ScheduleDebugInput(inp)
+            raise ScheduleDebugInputError(inp)
 
     if (
             not sched_state.active_inames
@@ -2055,7 +2061,7 @@ def generate_loop_schedules_inner(kernel, callables_table, debug_args=None):
                             sched_state, debug=debug, **schedule_gen_kwargs):
                         pass
 
-                except ScheduleDebugInput as e:
+                except ScheduleDebugInputError as e:
                     debug.debug_length = int(str(e))
                     continue
 

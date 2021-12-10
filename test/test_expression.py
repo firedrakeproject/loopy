@@ -399,7 +399,9 @@ def test_indexof(ctx_factory):
 
     knl = lp.make_kernel(
          """ { [i,j]: 0<=i,j<5 } """,
-         """ out[i,j] = indexof(out[i,j])""")
+         """ out[i,j] = indexof(out[i,j])""",
+         [lp.GlobalArg("out", is_input=False, shape=lp.auto)]
+    )
 
     knl = lp.set_options(knl, write_cl=True)
 
@@ -414,16 +416,14 @@ def test_indexof_vec(ctx_factory):
     queue = cl.CommandQueue(ctx)
 
     if (
-            # Accurate as of 2015-10-08
-            ctx.devices[0].platform.name.startswith("Portable")
-            or
             # Accurate as of 2019-11-04
             ctx.devices[0].platform.name.startswith("Intel")):
         pytest.skip("target ICD miscompiles vector code")
 
     knl = lp.make_kernel(
          """ { [i,j,k]: 0<=i,j,k<4 } """,
-         """ out[i,j,k] = indexof_vec(out[i,j,k])""")
+         """ out[i,j,k] = indexof_vec(out[i,j,k])""",
+         [lp.GlobalArg("out", shape=lp.auto, is_input=False)])
 
     knl = lp.tag_inames(knl, {"i": "vec"})
     knl = lp.tag_data_axes(knl, "out", "vec,c,c")
@@ -508,6 +508,11 @@ def test_complex_support(ctx_factory, target):
             out_sum = sum(i1, 1.0*i1 + i1*1jf)*sum(i2, 1.0*i2 + i2*1jf)
             conj_out_sum = conj(out_sum)
             """,
+            [
+                lp.GlobalArg("out_sum, euler1, real_plus_complex",
+                            is_input=False, shape=lp.auto),
+                ...
+            ],
             target=target(),
             seq_dependencies=True)
     knl = lp.set_options(knl, "return_dict")
@@ -541,6 +546,25 @@ def test_complex_support(ctx_factory, target):
     np.testing.assert_allclose(out["out_sum"], (0.5*n*(n-1) + 0.5*n*(n-1)*1j) ** 2)
     np.testing.assert_allclose(out["conj_out_sum"],
                                (0.5*n*(n-1) - 0.5*n*(n-1)*1j) ** 2)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_real_with_real_argument(ctx_factory, dtype):
+    ctx = ctx_factory()
+    queue = cl.CommandQueue(ctx)
+
+    knl = lp.make_kernel(
+            "{[i]: 0 <= i < nresult}",
+            "result[i] = real(ary[i])",
+            )
+
+    rng = np.random.default_rng()
+    ary = cl.array.to_device(queue, rng.random(128).astype(dtype))
+
+    _, (result,) = knl(queue, ary=ary)
+
+    assert result.dtype == ary.dtype
+    np.testing.assert_allclose(result.get(), np.real(ary.get()))
 
 
 def test_bool_type_context(ctx_factory):

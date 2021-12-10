@@ -151,8 +151,17 @@ class ExpressionToCExpressionMapper(IdentityMapper):
             if isinstance(arg, ArrayBase):
                 if arg.shape == ():
                     if arg.offset:
-                        # FIXME
-                        raise NotImplementedError("in-memory scalar with offset")
+
+                        from loopy.kernel.array import _apply_offset
+                        from loopy.symbolic import simplify_using_aff
+
+                        subscript = _apply_offset(0, expr.name, arg)
+                        result = self.make_subscript(
+                                arg,
+                                var(expr.name),
+                                simplify_using_aff(
+                                    self.kernel, self.rec(subscript, "i")))
+                        return result
                     else:
                         return var(expr.name)[0]
                 else:
@@ -373,8 +382,7 @@ class ExpressionToCExpressionMapper(IdentityMapper):
         result_type = self.infer_type(expr)
         return type(expr)(
                 self.rec(expr.condition, type_context,
-                         to_loopy_type(np.bool8,
-                                       target=self.kernel.target)),
+                         to_loopy_type(np.bool8)),
                 self.rec(expr.then, type_context, result_type),
                 self.rec(expr.else_, type_context, result_type),
                 )

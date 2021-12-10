@@ -51,7 +51,7 @@ class PyOpenCLCallable(ScalarCallable):
         for id in arg_id_to_dtype:
             # since all the below functions are single arg.
             if not -1 <= id <= 0:
-                raise LoopyError("%s can only take one argument." % name)
+                raise LoopyError(f"{name} can only take one argument")
 
         if 0 not in arg_id_to_dtype or arg_id_to_dtype[0] is None:
             # the types provided aren't mature enough to specialize the
@@ -69,12 +69,21 @@ class PyOpenCLCallable(ScalarCallable):
                 elif dtype.numpy_dtype == np.complex128:
                     tpname = "cdouble"
                 else:
-                    raise LoopyTypeError("unexpected complex type '%s'" % dtype)
+                    raise LoopyTypeError(f"unexpected complex type '{dtype}'")
 
                 return (
                         self.copy(name_in_target=f"{tpname}_{name}",
                             arg_id_to_dtype={0: dtype, -1: NumpyType(
                                 np.dtype(dtype.numpy_dtype.type(0).real))}),
+                        callables_table)
+
+        if name in ["real", "imag"]:
+            if not dtype.is_complex():
+                tpname = dtype.numpy_dtype.type.__name__
+                return (
+                        self.copy(
+                            name_in_target=f"lpy_{name}_{tpname}",
+                            arg_id_to_dtype={0: dtype, -1: dtype}),
                         callables_table)
 
         if name in ["sqrt", "exp", "log",
@@ -109,6 +118,23 @@ class PyOpenCLCallable(ScalarCallable):
         return (
                 self.copy(arg_id_to_dtype=arg_id_to_dtype),
                 callables_table)
+
+    def generate_preambles(self, target):
+        name = self.name_in_target
+        if name.startswith("lpy_real") or name.startswith("lpy_imag"):
+            if name.startswith("lpy_real"):
+                ret = "x"
+            else:
+                ret = "0"
+
+            dtype = self.arg_id_to_dtype[-1]
+            ctype = target.dtype_to_typename(dtype)
+
+            yield(f"40_{name}", f"""
+            static inline {ctype} {name}({ctype} x) {{
+                return {ret};
+            }}
+            """)
 
 
 def get_pyopencl_callables():
@@ -455,10 +481,45 @@ class PyOpenCLTarget(OpenCLTarget):
     def get_kernel_executor_cache_key(self, queue, **kwargs):
         return queue.context
 
+    def preprocess_translation_unit_for_passed_args(self, t_unit, epoint,
+                                                   passed_args_dict):
+
+        # {{{ ValueArgs -> GlobalArgs if passed as array shapes
+
+        from loopy.kernel.data import ValueArg, GlobalArg
+        import pyopencl.array as cla
+
+        knl = t_unit[epoint]
+        new_args = []
+
+        for arg in knl.args:
+            if isinstance(arg, ValueArg):
+                if (arg.name in passed_args_dict
+                        and isinstance(passed_args_dict[arg.name], cla.Array)
+                        and passed_args_dict[arg.name].shape == ()):
+                    arg = GlobalArg(name=arg.name, dtype=arg.dtype, shape=(),
+                                    is_output=False, is_input=True)
+
+            new_args.append(arg)
+
+        knl = knl.copy(args=new_args)
+
+        t_unit = t_unit.with_kernel(knl)
+
+        # }}}
+
+        return t_unit
+
     def get_kernel_executor(self, program, queue, **kwargs):
         from loopy.target.pyopencl_execution import PyOpenCLKernelExecutor
+
+        epoint = kwargs.pop("entrypoint")
+        program = self.preprocess_translation_unit_for_passed_args(program,
+                                                                   epoint,
+                                                                   kwargs)
+
         return PyOpenCLKernelExecutor(queue.context, program,
-                entrypoint=kwargs.pop("entrypoint"))
+                                      entrypoint=epoint)
 
     def with_device(self, device):
         from warnings import warn
@@ -471,7 +532,7 @@ class PyOpenCLTarget(OpenCLTarget):
 
 # {{{ host code: value arg setup
 
-def generate_value_arg_setup(kernel, devices, implemented_data_info):
+def generate_value_arg_setup(kernel, implemented_data_info):
     options = kernel.options
 
     import loopy as lp
@@ -642,8 +703,11 @@ class PyOpenCLPythonASTBuilder(PythonASTBuilderBase):
             if tv.address_space == AddressSpace.GLOBAL),
             key=lambda tv: tv.name)
 
-    def get_temporary_decls(self, codegen_state, schedule_state):
+    def get_temporary_decls(self, codegen_state, schedule_index):
         from genpy import Assign, Comment, Line
+        from collections import defaultdict
+        from numbers import Number
+        import pymbolic.primitives as prim
 
         def alloc_nbytes(tv):
             from functools import reduce
@@ -657,17 +721,50 @@ class PyOpenCLPythonASTBuilder(PythonASTBuilderBase):
         if not global_temporaries:
             return []
 
-        return [
-            Comment("{{{ allocate global temporaries"),
-            Line()] + [
-            Assign(tv.name, "allocator(%s)" %
-                ecm(alloc_nbytes(tv), PREC_NONE, "i"))
-                for tv in global_temporaries] + [
-            Assign("_global_temporaries", "[{tvs}]".format(tvs=", ".join(
-                tv.name for tv in global_temporaries)))] + [
-            Line(),
-            Comment("}}}"),
-            Line()]
+        # {{{ allocate space for the base_storage
+
+        base_storage_sizes = defaultdict(set)
+
+        for tv in global_temporaries:
+            if tv.base_storage:
+                base_storage_sizes[tv.base_storage].add(tv.nbytes)
+
+        # }}}
+
+        allocated_var_names = []
+        code_lines = []
+        code_lines.append(Line())
+        code_lines.append(Comment("{{{ allocate global temporaries"))
+        code_lines.append(Line())
+
+        for name, sizes in base_storage_sizes.items():
+            if all(isinstance(s, Number) for s in sizes):
+                size = max(sizes)
+            else:
+                size = prim.Max(tuple(sizes))
+
+            allocated_var_names.append(name)
+            code_lines.append(Assign(name,
+                                     f"allocator({ecm(size, PREC_NONE, 'i')})"))
+
+        for tv in global_temporaries:
+            if tv.base_storage:
+                assert tv.base_storage in base_storage_sizes
+                code_lines.append(Assign(tv.name, tv.base_storage))
+            else:
+                nbytes_str = ecm(tv.nbytes, PREC_NONE, "i")
+                allocated_var_names.append(tv.name)
+                code_lines.append(Assign(tv.name,
+                                         f"allocator({nbytes_str})"))
+
+        code_lines.append(Assign("_global_temporaries", "[{tvs}]".format(
+            tvs=", ".join(tv for tv in allocated_var_names))))
+
+        code_lines.append(Line())
+        code_lines.append(Comment("}}}"))
+        code_lines.append(Line())
+
+        return code_lines
 
     def get_kernel_call(self, codegen_state, name, gsize, lsize, extra_args):
         ecm = self.get_expression_to_code_mapper(codegen_state)
@@ -682,7 +779,6 @@ class PyOpenCLPythonASTBuilder(PythonASTBuilderBase):
         value_arg_code, arg_idx_to_cl_arg_idx, cl_arg_count = \
             generate_value_arg_setup(
                     codegen_state.kernel,
-                    [self.target.device],
                     all_args)
         arry_arg_code = generate_array_arg_setup(
             codegen_state.kernel,

@@ -62,10 +62,12 @@ def test_globals_decl_once_with_multi_subprogram(ctx_factory):
             out[i] = a[i]+cnst[i]{id=first}
             out[ii] = 2*out[ii]+cnst[ii]{id=second}
             """,
-            [lp.TemporaryVariable(
-                "cnst", initializer=cnst,
-                scope=lp.AddressSpace.GLOBAL,
-                read_only=True), "..."])
+            [
+                lp.TemporaryVariable(
+                    "cnst", initializer=cnst, scope=lp.AddressSpace.GLOBAL,
+                    read_only=True),
+                lp.GlobalArg("out", is_input=False, shape=lp.auto),
+                "..."])
     knl = lp.fix_parameters(knl, n=16)
     knl = lp.add_barrier(knl, "id:first", "id:second")
 
@@ -1472,7 +1474,11 @@ def test_finite_difference_expr_subst(ctx_factory):
     fin_diff_knl = lp.make_kernel(
         "{[i]: 1<=i<=n}",
         "out[i] = -(f[i+1] - f[i-1])/h",
-        [lp.GlobalArg("out", shape="n+2"), "..."])
+        [
+            lp.GlobalArg("out", shape="n+2"),
+            lp.GlobalArg("f", is_input=False, is_output=True, shape=lp.auto),
+            "..."
+        ])
 
     flux_knl = lp.make_kernel(
         "{[j]: 1<=j<=n}",
@@ -3132,6 +3138,129 @@ def test_trace_assignments(ctx_factory, opt_name):
     knl = lp.set_options(knl, **{opt_name: True})
 
     knl(queue)
+
+
+def test_tunit_to_python():
+    knl = lp.make_kernel(
+            "{[i, j]: 0<=i,j<n}",
+            """
+            y[i] = sin(x[i])     {id=insn0}
+            z[i] = sin(y[i])     {id=insn1, dep=insn0}
+            w = sum(j, 2 * z[j]) {id=insn2, dep=insn1:insn0}
+            """,
+            name="my_kernel")
+
+    knl = lp.split_iname(knl, "i", 4, inner_tag="l.0", outer_tag="g.0")
+    lp.t_unit_to_python(knl)  # contains check to assert roundtrip equivalence
+
+    mysin = lp.make_function(
+        "{[i, j]: 0<=i<n and 0<=j<m}",
+        """
+        y[i, j] = sin(x[i, j])
+        """, name="my_kernel")
+    t_unit = lp.make_kernel(
+        "{[i, j]: 0<=i, j<10}",
+        """
+        [i, j]: y[i,j] = mysin(10, 10, [i, j]: x[i, j])
+        """)
+
+    t_unit = lp.merge([t_unit, mysin])
+    lp.t_unit_to_python(t_unit)  # contains check to assert roundtrip equivalence
+
+
+def test_global_tv_with_base_storage_across_gbarrier(ctx_factory):
+    # see https://github.com/inducer/loopy/pull/466 for context
+    ctx = ctx_factory()
+    cq = cl.CommandQueue(ctx)
+
+    t_unit = lp.make_kernel(
+        "{[i,j]: 0<=i,j<10}",
+        """
+        tmp[i] = i
+        ... gbarrier
+        out[j] = tmp[9-j]
+        """,
+        [lp.TemporaryVariable("tmp",
+                              address_space=lp.AddressSpace.GLOBAL,
+                              base_storage="base"),
+         ...],
+        seq_dependencies=True)
+
+    t_unit = lp.tag_inames(t_unit, {"i": "g.0", "j": "g.0"})
+
+    _, (out,) = t_unit(cq)
+    np.testing.assert_allclose(out.get(), np.arange(9, -1, -1))
+
+
+def test_get_return_from_kernel_mapping():
+    from loopy.schedule.tools import get_return_from_kernel_mapping
+
+    t_unit = lp.make_kernel(
+        "{[i,j]: 0<=i,j<10}",
+        """
+        <> tmp[i] = i
+        ... gbarrier
+        out[j] = tmp[9-j]
+        """,
+        seq_dependencies=True)
+    t_unit = lp.linearize(lp.preprocess_kernel(t_unit))
+    ret_from_knl_idx = get_return_from_kernel_mapping(t_unit.default_entrypoint)
+    assert ret_from_knl_idx[0] == 4
+    assert ret_from_knl_idx[1] == 4
+    assert ret_from_knl_idx[2] == 4
+    assert ret_from_knl_idx[3] == 4
+
+    assert ret_from_knl_idx[6] == 10
+    assert ret_from_knl_idx[7] == 10
+    assert ret_from_knl_idx[8] == 10
+    assert ret_from_knl_idx[9] == 10
+
+
+def test_zero_stride_array(ctx_factory):
+    ctx = ctx_factory()
+    cq = cl.CommandQueue(ctx)
+
+    knl = lp.make_kernel(
+        ["{[i]: 0<=i<10}",
+         "{[j]: 1=0}"],
+        """
+        y[i, j] = 1
+        """, [lp.GlobalArg("y", shape=(10, 0))])
+
+    evt, (out,) = knl(cq)
+    assert out.shape == (10, 0)
+
+
+def test_predicated_redn(ctx_factory):
+    # See https://github.com/inducer/loopy/issues/427
+    ctx = ctx_factory()
+
+    knl = lp.make_kernel(
+        ["{[i]: 0<= i < 5}",
+         "{[j]: 0<= j < 10}",
+         "{[k]: 0<=k<10}"],
+        """
+        <> tmp[k] = k ** 2
+        y[j] = 0 if j < 5 else sum(i, tmp[i+j-5])
+        """, seq_dependencies=True)
+
+    # if predicates are added correctly, access checker does not raise
+    lp.auto_test_vs_ref(knl, ctx, knl)
+
+
+def test_redn_in_predicate(ctx_factory):
+    ctx = ctx_factory()
+
+    knl = lp.make_kernel(
+        ["{[i]: 0<= i < 5}",
+         "{[j]: 0<= j < 10}",
+         "{[k]: 0<=k<10}"],
+        """
+        y[j] = sum(i, i**3) if (sum(k, k**2) < 2) else (10 - j)
+        """,
+        seq_dependencies=True)
+
+    lp.auto_test_vs_ref(knl, ctx, knl)
 
 
 if __name__ == "__main__":

@@ -1296,6 +1296,7 @@ class GlobalMemAccessCounter(MemAccessCounterBase):
             array = self.knl.arg_dict[name]
         else:
             # this is a temporary variable
+            # FIXME temporary variable could have global address space
             return self.new_zero_poly_map()
 
         if not isinstance(array, lp.ArrayArg):
@@ -1316,14 +1317,24 @@ class GlobalMemAccessCounter(MemAccessCounterBase):
         except AttributeError:
             var_tags = frozenset()
 
+        is_global_temp = False
         if name in self.knl.arg_dict:
             array = self.knl.arg_dict[name]
+        elif name in self.knl.temporary_variables:
+            # This a temporary, but might have global address space
+            from loopy.kernel.data import AddressSpace
+            array = self.knl.temporary_variables[name]
+            if array.address_space != AddressSpace.GLOBAL:
+                # This temporary does not have global address space
+                return self.rec(expr.index)
+            # This temporary has global address space
+            is_global_temp = True
         else:
-            # this is a temporary variable
+            # This temporary does not have global address space
             return self.rec(expr.index)
 
-        if not isinstance(array, lp.ArrayArg):
-            # this array is not in global memory
+        if (not is_global_temp) and not isinstance(array, lp.ArrayArg):
+            # This array is not in global memory
             return self.rec(expr.index)
 
         index_tuple = expr.index  # could be tuple or scalar index
@@ -1720,7 +1731,7 @@ def _get_op_map_for_single_kernel(knl, callables_table,
     return op_map
 
 
-def get_op_map(program, numpy_types=True, count_redundant_work=False,
+def get_op_map(program, count_redundant_work=False,
                count_within_subscripts=True, subgroup_size=None,
                entrypoint=None):
 
@@ -1792,11 +1803,6 @@ def get_op_map(program, numpy_types=True, count_redundant_work=False,
     # Ordering restriction: preprocess might insert arguments to
     # make strides valid. Those also need to go through type inference.
     program = infer_unknown_types(program, expect_completion=True)
-
-    if numpy_types is not None:
-        from warnings import warn
-        warn("numpy_types is being ignored and will be removed in 2020.",
-                DeprecationWarning, stacklevel=2)
 
     return _get_op_map_for_single_kernel(
             program[entrypoint], program.callables_table,
@@ -1913,7 +1919,7 @@ def _get_mem_access_map_for_single_kernel(knl, callables_table,
     return access_map
 
 
-def get_mem_access_map(program, numpy_types=None, count_redundant_work=False,
+def get_mem_access_map(program, count_redundant_work=False,
                        subgroup_size=None, entrypoint=None):
     """Count the number of memory accesses in a loopy kernel.
 
@@ -2010,11 +2016,6 @@ def get_mem_access_map(program, numpy_types=None, count_redundant_work=False,
     # Ordering restriction: preprocess might insert arguments to
     # make strides valid. Those also need to go through type inference.
     program = infer_unknown_types(program, expect_completion=True)
-
-    if numpy_types is not None:
-        from warnings import warn
-        warn("numpy_types is being ignored and will be removed in 2020.",
-                DeprecationWarning, stacklevel=2)
 
     return _get_mem_access_map_for_single_kernel(
             program[entrypoint], program.callables_table,

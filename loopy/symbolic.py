@@ -57,7 +57,9 @@ from pymbolic.mapper.constant_folder import \
 
 from pymbolic.parser import Parser as ParserBase
 from loopy.diagnostic import LoopyError
-from loopy.diagnostic import ExpressionToAffineConversionError
+from loopy.diagnostic import (ExpressionToAffineConversionError,
+                              UnableToDetermineAccessRangeError)
+
 
 import islpy as isl
 from islpy import dim_type
@@ -67,6 +69,9 @@ import numpy as np
 
 __doc__ = """
 .. currentmodule:: loopy.symbolic
+
+Loopy-specific expression types
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. autoclass:: Literal
 
@@ -93,6 +98,12 @@ __doc__ = """
 .. autoclass:: ResolvedFunction
 
 .. autoclass:: SubArrayRef
+
+
+Expression Manipulation Helpers
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. autofunction:: simplify_using_aff
 """
 
 
@@ -678,6 +689,11 @@ class TaggedVariable(LoopyExpressionBase, p.Variable, Taggable):
 
     def __getinitargs__(self):
         return self.name, self.tags
+
+    def copy(self, *, name=None, tags=None):
+        name = self.name if name is None else name
+        tags = self.tags if tags is None else tags
+        return TaggedVariable(name, tags)
 
     mapper_method = intern("map_tagged_variable")
 
@@ -1828,6 +1844,10 @@ class PwAffEvaluationMapper(EvaluationMapperBase, IdentityMapperMixin):
         raise TypeError("literal '%s' not supported "
                         "for as-pwaff evaluation" % expr)
 
+    def map_reduction(self, expr):
+        raise TypeError("reduction in '%s' not supported "
+                "for as-pwaff evaluation" % expr)
+
 
 def aff_from_expr(space, expr, vars_to_zero=None):
     if vars_to_zero is None:
@@ -1953,6 +1973,11 @@ def qpolynomial_from_expr(space, expr):
 
 @memoize_on_first_arg
 def simplify_using_aff(kernel, expr):
+    """
+    Simplifies *expr* on *kernel*'s domain.
+
+    :arg expr: An instance of :class:`pymbolic.primitives.Expression`.
+    """
     inames = get_dependencies(expr) & kernel.all_inames()
 
     # FIXME: Ideally, we should find out what inames are usable and allow
@@ -2049,6 +2074,10 @@ class ConditionExpressionToBooleanOpsExpression(IdentityMapper):
     map_call = _get_expr_neq_0
     map_power = _get_expr_neq_0
     map_power = _get_expr_neq_0
+
+    def map_reduction(self, expr):
+        raise ExpressionToAffineConversionError("cannot (yet) convert reduction "
+                "to affine")
 
 
 class AffineConditionToISLSetMapper(IdentityMapper):
@@ -2263,8 +2292,13 @@ class PrimeAdder(IdentityMapper):
 
 # {{{ get access range
 
-class UnableToDetermineAccessRange(Exception):
-    pass
+class UnableToDetermineAccessRange(UnableToDetermineAccessRangeError):
+    def __init__(self, *args, **kwargs):
+        from warnings import warn
+        warn("UnableToDetermineAccessRange renamed to"
+             " UnableToDetermineAccessRangeError,  will be unsupported in"
+             " 2022.", DeprecationWarning, stacklevel=2)
+        super().__init__(*args, **kwargs)
 
 
 def get_access_map(domain, subscript, assumptions=None, shape=None,
@@ -2341,7 +2375,7 @@ def get_access_map(domain, subscript, assumptions=None, shape=None,
 
             if shape_aff is None:
                 # failed to convert shape[idim] to aff
-                raise UnableToDetermineAccessRange(
+                raise UnableToDetermineAccessRangeError(
                         "unable to determine access range of subscript: [%s] "
                         "(encountered %s: %s)"
                         % (", ".join(str(si) for si in subscript),
@@ -2432,7 +2466,7 @@ class BatchedAccessMapMapper(WalkMapper):
                     domain, subscript, self.kernel.assumptions,
                     shape=descriptor.shape if self._overestimate else None,
                     allowed_constant_names=self.kernel.get_unwritten_value_args())
-        except UnableToDetermineAccessRange:
+        except UnableToDetermineAccessRangeError:
             self.bad_subscripts[arg_name].append(expr)
             return
 
