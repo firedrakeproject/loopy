@@ -26,9 +26,7 @@ from loopy.symbolic import (get_dependencies,
         RuleAwareIdentityMapper, SubstitutionRuleMappingContext,
         SubstitutionMapper)
 from pymbolic.mapper.substitutor import make_subst_func
-from pytools.persistent_dict import WriteOncePersistentDict
-from loopy.tools import LoopyKeyBuilder, PymbolicExpressionHashWrapper
-from loopy.version import DATA_MODEL_VERSION
+from loopy.tools import memoize_on_disk
 from loopy.diagnostic import LoopyError
 from loopy.kernel import LoopKernel
 from loopy.translation_unit import TranslationUnit
@@ -124,12 +122,6 @@ class ArrayAccessReplacer(RuleAwareIdentityMapper):
 # }}}
 
 
-buffer_array_cache = WriteOncePersistentDict(
-        "loopy-buffer-array-cache-"+DATA_MODEL_VERSION,
-        key_builder=LoopyKeyBuilder())
-
-
-# Adding an argument? also add something to the cache_key below.
 def buffer_array_for_single_kernel(kernel, callables_table, var_name,
         buffer_inames, init_expression=None, store_expression=None,
         within=None, default_tag="l.auto", temporary_scope=None,
@@ -245,26 +237,6 @@ def buffer_array_for_single_kernel(kernel, callables_table, var_name,
     if temporary_scope is None:
         import loopy as lp
         temporary_scope = lp.auto
-
-    # }}}
-
-    # {{{ caching
-
-    from loopy import CACHING_ENABLED
-
-    cache_key = (kernel, var_name,
-            tuple(buffer_inames),
-            PymbolicExpressionHashWrapper(init_expression),
-            PymbolicExpressionHashWrapper(store_expression), within,
-            default_tag, temporary_scope, fetch_bounding_box)
-
-    if CACHING_ENABLED:
-        try:
-            result = buffer_array_cache[cache_key]
-            logger.info("%s: buffer_array cache hit" % kernel.name)
-            return result
-        except KeyError:
-            pass
 
     # }}}
 
@@ -527,14 +499,23 @@ def buffer_array_for_single_kernel(kernel, callables_table, var_name,
 
     new_insns.append(init_instruction)
     if did_write:
-        new_insns.append(store_instruction)
+        # new_insns_with_redirected_deps: if an insn depends on a modified
+        # insn, then it should also depend on the store insn.
+        new_insns_with_redirected_deps = [
+            insn.copy(depends_on=(insn.depends_on | {store_instruction.id}))
+            if insn.depends_on & aar.modified_insn_ids
+            else insn
+            for insn in new_insns
+        ] + [store_instruction]
     else:
         for iname in store_inames:
             del new_iname_to_tag[iname]
 
+        new_insns_with_redirected_deps = new_insns
+
     kernel = kernel.copy(
             domains=new_kernel_domains,
-            instructions=new_insns,
+            instructions=new_insns_with_redirected_deps,
             temporary_variables=new_temporary_variables)
 
     from loopy import tag_inames
@@ -543,12 +524,10 @@ def buffer_array_for_single_kernel(kernel, callables_table, var_name,
     from loopy.kernel.tools import assign_automatic_axes
     kernel = assign_automatic_axes(kernel, callables_table)
 
-    if CACHING_ENABLED:
-        buffer_array_cache.store_if_not_present(cache_key, kernel)
-
     return kernel
 
 
+@memoize_on_disk
 def buffer_array(program, *args, **kwargs):
     assert isinstance(program, TranslationUnit)
 
