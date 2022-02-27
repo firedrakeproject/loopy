@@ -1337,6 +1337,85 @@ def test_rename_inames_redn():
     assert "ifused" in t_unit.default_entrypoint.all_inames()
 
 
+def test_rename_inames(ctx_factory):
+    ctx = ctx_factory()
+
+    knl = lp.make_kernel(
+        "{[i1, i2]: 0<=i1, i2<10}",
+        """
+        y1[i1] = 2
+        y2[i2] = 3
+        """)
+    ref_knl = knl
+    knl = lp.rename_inames(knl, ["i1", "i2"], "ifused")
+    lp.auto_test_vs_ref(knl, ctx, ref_knl)
+
+
+def test_buffer_array_preserves_rev_deps(ctx_factory):
+    # See https://github.com/inducer/loopy/issues/546
+    ctx = ctx_factory()
+    knl = lp.make_kernel(
+        ["{[i0, j0]: 0<=i0<100 and 0<=j0<10}",
+         "{[i1, j1]: 0<=i1<100 and 0<=j1<10}"],
+        """
+        out0[i0] = sum(j0, A[i0] * x[j0])
+        ... gbarrier {id=gbarrier}
+        out1[i1] = sum(j1, A[i1] * x[j1])
+        """, seq_dependencies=True)
+    knl = lp.add_dtypes(knl, {"A": np.float64,
+                              "x": np.float64})
+    ref_knl = knl
+
+    knl = lp.split_iname(knl, "j0", 2)
+    knl = lp.split_iname(knl, "i0", 2, outer_tag="g.0")
+    knl = lp.buffer_array(knl, "out0",
+                          buffer_inames=["i0_inner"],
+                          init_expression="0")
+    assert "store_out0" in knl.default_entrypoint.id_to_insn["gbarrier"].depends_on
+    lp.auto_test_vs_ref(ref_knl, ctx, knl)
+
+
+def test_rename_inames_existing_ok(ctx_factory):
+    ctx = ctx_factory()
+
+    knl = lp.make_kernel(
+        "{[i1, i2, i3]: 0<=i1, i2, i3<10}",
+        """
+        y1[i1] = 2
+        y2[i2] = 3
+        y3[i3] = 4
+        """)
+    ref_knl = knl
+    knl = lp.rename_inames(knl, ["i1", "i2"], "i3", existing_ok=True)
+    lp.auto_test_vs_ref(knl, ctx, ref_knl)
+
+
+def test_precompute_with_gbarrier(ctx_factory):
+    # See https://github.com/inducer/loopy/issues/543
+    ctx = ctx_factory()
+
+    t_unit = lp.make_kernel(
+        ["{[i0, j0]: 0<=i0<100 and 0<=j0<10}",
+         "{[i1, j1]: 0<=i1<100 and 0<=j1<10}"],
+        """
+        out0[i0] = sum(j0, A[i0] * x[j0])
+        ... gbarrier {id=gbarrier}
+        out1[i1] = sum(j1, A[i1] * x[j1])
+        """, seq_dependencies=True)
+    t_unit = lp.add_dtypes(t_unit, {"A": np.float64,
+                                    "x": np.float64})
+    ref_t_unit = t_unit
+
+    t_unit = lp.add_prefetch(t_unit,
+                             "x",
+                             sweep_inames=["j1"],
+                             within="writes:out1",
+                             prefetch_insn_id="x_fetch")
+    assert "gbarrier" in t_unit.default_entrypoint.id_to_insn["x_fetch"].depends_on
+
+    lp.auto_test_vs_ref(ref_t_unit, ctx, t_unit)
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         exec(sys.argv[1])
