@@ -631,6 +631,27 @@ def test_pyopencl_target_with_global_temps_with_base_storage(ctx_factory):
                                              )
 
 
+def test_glibc_bessel_functions():
+    from scipy.special import jn, yn
+    n = 2
+    knl = lp.make_kernel(
+        "{[i]: 0<=i<10}",
+        """
+        first_kind_bessel[i]  = bessel_jn(n, x[i])
+        second_kind_bessel[i] = bessel_yn(n, x[i])
+        """, target=lp.ExecutableCTarget())
+    if not knl.target.has_gnu_libc:
+        pytest.skip("GNU-libc not found.")
+
+    knl = lp.fix_parameters(knl, n=2)
+    knl = lp.set_options(knl, return_dict=True)
+    knl = lp.set_options(knl, write_code=True)
+    x_in = np.abs(np.random.rand(10))
+    _, out_dict = knl(x=x_in)
+    np.testing.assert_allclose(jn(n, x_in), out_dict["first_kind_bessel"])
+    np.testing.assert_allclose(yn(n, x_in), out_dict["second_kind_bessel"])
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         exec(sys.argv[1])
