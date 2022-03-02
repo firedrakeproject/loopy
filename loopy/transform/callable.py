@@ -81,12 +81,10 @@ def merge(translation_units):
         callables from each of the *translation_units.
     """
 
-    # for i in range(1, len(translation_units)):
-        # if translation_units[i].target != translation_units[i-1].target:
-        #     print(translation_units[i].target)
-        #     print(translation_units[i-1].target)
-        #     raise LoopyError("translation units to be merged should have the"
-        #                      " same target.")
+    for i in range(1, len(translation_units)):
+        if translation_units[i].target != translation_units[i-1].target:
+            raise LoopyError("translation units to be merged should have the"
+                             " same target.")
 
     # {{{ check for callable collision
 
