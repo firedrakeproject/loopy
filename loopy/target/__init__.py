@@ -149,6 +149,13 @@ class TargetBase:
             kernel executor caching.
         """
         raise NotImplementedError()
+    
+    def __hash__(self):
+        import hashlib
+        from loopy.tools import LoopyKeyBuilder
+        key_hash = hashlib.sha256()
+        self.update_persistent_hash(key_hash, LoopyKeyBuilder())
+        return hash(key_hash.digest())
 
 
 class ASTBuilderBase:
