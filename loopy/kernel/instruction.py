@@ -1315,7 +1315,10 @@ class CInstruction(InstructionBase):
         for subscript_deps in self.assignee_subscript_deps():
             result = result | subscript_deps
 
-        return frozenset(result) | self.predicates
+        for pred in self.predicates:
+            result = result | get_dependencies(pred)
+
+        return frozenset(result)
 
     def reduction_inames(self):
         return set()
