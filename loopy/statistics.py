@@ -1679,6 +1679,9 @@ def _get_op_map_for_single_kernel(knl, callables_table,
                              tuple(insn.predicates))
 
         elif isinstance(insn, (CInstruction, NoOpInstruction, BarrierInstruction)):
+            warn_with_kernel(knl, "count_non_assignment",
+                             "Non-assignment instruction encountered in "
+                             "_get_op_map_for_single_kernel, only predicates are counted.")
             exprs_in_insn = tuple(insn.predicates)
         else:
             raise NotImplementedError("unexpected instruction item type: '%s'"
