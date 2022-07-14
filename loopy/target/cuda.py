@@ -264,6 +264,10 @@ class CudaTarget(CFamilyTarget):
 
     # }}}
 
+    @property
+    def is_executable(self) -> bool:
+        return False
+
 # }}}
 
 
