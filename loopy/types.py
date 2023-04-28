@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
 __license__ = """
@@ -20,6 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+from typing import Any, Mapping
 from warnings import warn
 import numpy as np
 
@@ -244,5 +247,23 @@ def to_loopy_type(dtype, allow_auto=False, allow_none=False, for_atomic=False,
     else:
         raise TypeError("dtype must be a LoopyType, or convertible to one, "
                 "found '%s' instead" % type(dtype))
+
+
+_TO_UNSIGNED_MAPPING: Mapping[np.dtype[Any], np.dtype[Any]] = {
+        np.dtype(np.int8): np.dtype(np.uint8),
+        np.dtype(np.int16): np.dtype(np.uint16),
+        np.dtype(np.int32): np.dtype(np.uint32),
+        np.dtype(np.int64): np.dtype(np.uint64),
+        }
+
+
+def to_unsigned_dtype(dtype: "np.dtype[Any]") -> "np.dtype[Any]":
+    if dtype.kind == "u":
+        return dtype
+    if dtype.kind != "i":
+        raise ValueError("can only convert integer types to unsigned")
+
+    return _TO_UNSIGNED_MAPPING[dtype]
+
 
 # vim: foldmethod=marker

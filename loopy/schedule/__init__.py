@@ -20,9 +20,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+import sys
+from dataclasses import dataclass, replace
+from typing import Any, TypeVar
 
 from pytools import ImmutableRecord
-import sys
 import islpy as isl
 from loopy.diagnostic import LoopyError, ScheduleDebugInputError, warn_with_kernel
 
@@ -50,17 +52,15 @@ __doc__ = """
 """
 
 
+_SchedItemSelfT = TypeVar("_SchedItemSelfT", bound="ScheduleItem")
+
+
 # {{{ schedule items
 
-class ScheduleItem(ImmutableRecord):
-    __slots__ = []
-
-    def update_persistent_hash(self, key_hash, key_builder):
-        """Custom hash computation function for use with
-        :class:`pytools.persistent_dict.PersistentDict`.
-        """
-        for field_name in self.hash_fields:
-            key_builder.rec(key_hash, getattr(self, field_name))
+@dataclass(frozen=True)
+class ScheduleItem:
+    def copy(self: _SchedItemSelfT, **kwargs: Any) -> _SchedItemSelfT:
+        return replace(self, **kwargs)
 
 
 class BeginBlockItem(ScheduleItem):
@@ -71,26 +71,32 @@ class EndBlockItem(ScheduleItem):
     pass
 
 
+@dataclass(frozen=True)
 class EnterLoop(BeginBlockItem):
-    hash_fields = __slots__ = ["iname"]
+    iname: str
 
 
+@dataclass(frozen=True)
 class LeaveLoop(EndBlockItem):
-    hash_fields = __slots__ = ["iname"]
+    iname: str
 
 
+@dataclass(frozen=True)
 class RunInstruction(ScheduleItem):
-    hash_fields = __slots__ = ["insn_id"]
+    insn_id: str
 
 
+@dataclass(frozen=True)
 class CallKernel(BeginBlockItem):
-    hash_fields = __slots__ = ["kernel_name", "extra_args", "extra_inames"]
+    kernel_name: str
 
 
+@dataclass(frozen=True)
 class ReturnFromKernel(EndBlockItem):
-    hash_fields = __slots__ = ["kernel_name"]
+    kernel_name: str
 
 
+@dataclass(frozen=True)
 class Barrier(ScheduleItem):
     """
     .. attribute:: comment
@@ -107,9 +113,10 @@ class Barrier(ScheduleItem):
 
     .. attribute:: originating_insn_id
     """
-
-    hash_fields = ["comment", "synchronization_kind", "mem_kind"]
-    __slots__ = hash_fields + ["originating_insn_id"]
+    comment: str
+    synchronization_kind: str
+    mem_kind: str
+    originating_insn_id: str
 
 # }}}
 
@@ -450,11 +457,7 @@ def dump_schedule(kernel, schedule):
             indent = indent[:-4]
             lines.append(indent + "end %s" % sched_item.iname)
         elif isinstance(sched_item, CallKernel):
-            lines.append(indent +
-                         "CALL KERNEL {}(extra_args={}, extra_inames={})".format(
-                             sched_item.kernel_name,
-                             sched_item.extra_args,
-                             sched_item.extra_inames))
+            lines.append(indent + f"CALL KERNEL {sched_item.kernel_name}")
             indent += "    "
         elif isinstance(sched_item, ReturnFromKernel):
             indent = indent[:-4]
@@ -1109,7 +1112,9 @@ def generate_loop_schedules_internal(
             for insn_id in sched_state.unscheduled_insn_ids:
                 insn = kernel.id_to_insn[insn_id]
                 if last_entered_loop in insn.within_inames:
-                    if debug_mode:
+                    can_leave = last_entered_loop in sched_state.vec_inames
+
+                    if debug_mode and not can_leave:
                         print("cannot leave '%s' because '%s' still depends on it"
                                 % (last_entered_loop, format_insn(kernel, insn.id)))
 
@@ -1141,7 +1146,6 @@ def generate_loop_schedules_internal(
                                         "dep_i": format_insn(kernel, insn_id),
                                         })
 
-                    can_leave = False
                     break
 
         if can_leave:
@@ -1329,11 +1333,8 @@ def generate_loop_schedules_internal(
                 - sched_state.ilp_inames
                 - sched_state.vec_inames
                 )
-            priority_tiers = [t for t in
-                              get_priority_tiers(wanted,
-                                                 sched_state.kernel.loop_priority
-                                                 )
-                              ]
+            priority_tiers = list(
+                    get_priority_tiers(wanted, sched_state.kernel.loop_priority))
 
             # Update the loop priority set, because some constraints may have
             # have been contradictary.
@@ -1374,11 +1375,11 @@ def generate_loop_schedules_internal(
                 found_viable_schedule = False
 
                 for iname in sorted(tier,
-                        key=lambda iname: (
-                            iname_to_usefulness.get(iname, 0),
+                        key=lambda key_iname: (
+                            iname_to_usefulness.get(key_iname, 0),
                             # Sort by iname to achieve deterministic
                             # ordering of generated schedules.
-                            iname),
+                            key_iname),
                         reverse=True):
 
                     for sub_sched in generate_loop_schedules_internal(
@@ -1499,7 +1500,7 @@ class DependencyTracker:
     .. automethod:: gen_dependencies_with_target_at
     """
 
-    def __init__(self, kernel, var_kind, reverse):
+    def __init__(self, kernel, callables_table, var_kind, reverse):
         """
         :arg var_kind: "global" or "local", the kind of variable based on which
             barrier-needing dependencies should be found.
@@ -1531,8 +1532,8 @@ class DependencyTracker:
         self.reverse = reverse
         self.var_kind = var_kind
 
-        from loopy.symbolic import AccessRangeOverlapChecker
-        self.overlap_checker = AccessRangeOverlapChecker(kernel)
+        from loopy.schedule.tools import WriteRaceChecker
+        self.write_race_checker = WriteRaceChecker(kernel, callables_table)
 
         if var_kind == "local":
             self.relevant_vars = kernel.local_var_names()
@@ -1654,7 +1655,7 @@ class DependencyTracker:
                     race_var, = src_race_vars
 
                     if not (
-                        self.overlap_checker.do_access_ranges_overlap_conservative(
+                        self.write_race_checker.do_accesses_result_in_races(
                                 target.id, tgt_dir, source_id, src_dir, race_var)):
                         continue
 
@@ -1746,8 +1747,7 @@ def _insn_ids_reaching_end(schedule, kind, reverse):
                     sched_item.synchronization_kind, kind):
                 insn_ids_alive_at_scope[-1].clear()
         else:
-            insn_ids_alive_at_scope[-1] |= {
-                    insn_id for insn_id in sched_item_to_insn_id(sched_item)}
+            insn_ids_alive_at_scope[-1] |= set(sched_item_to_insn_id(sched_item))
 
     assert len(insn_ids_alive_at_scope) == 1
     return insn_ids_alive_at_scope[-1]
@@ -1779,7 +1779,8 @@ def append_barrier_or_raise_error(kernel_name, schedule, dep, verify_only):
             originating_insn_id=None))
 
 
-def insert_barriers(kernel, schedule, synchronization_kind, verify_only, level=0):
+def insert_barriers(kernel, callables_table, schedule, synchronization_kind,
+                    verify_only, level=0):
     """
     :arg synchronization_kind: "local" or "global".
         The :attr:`Barrier.synchronization_kind` to be inserted. Generally, this
@@ -1793,7 +1794,8 @@ def insert_barriers(kernel, schedule, synchronization_kind, verify_only, level=0
     # {{{ insert barriers at outermost scheduling level
 
     def insert_barriers_at_outer_level(schedule, reverse=False):
-        dep_tracker = DependencyTracker(kernel, var_kind=synchronization_kind,
+        dep_tracker = DependencyTracker(kernel, callables_table,
+                                        var_kind=synchronization_kind,
                                         reverse=reverse)
 
         if reverse:
@@ -1896,9 +1898,9 @@ def insert_barriers(kernel, schedule, synchronization_kind, verify_only, level=0
 
         if isinstance(sched_item, EnterLoop):
             subloop, new_i = gather_schedule_block(schedule, i)
-            new_subloop = insert_barriers(
-                    kernel, subloop[1:-1], synchronization_kind, verify_only,
-                    level + 1)
+            new_subloop = insert_barriers(kernel, callables_table,
+                                          subloop[1:-1], synchronization_kind,
+                                          verify_only, level + 1)
             result.append(subloop[0])
             result.extend(new_subloop)
             result.append(subloop[-1])
@@ -2080,11 +2082,13 @@ def generate_loop_schedules_inner(kernel, callables_table, debug_args=None):
             if (gsize or lsize):
                 if not kernel.options.disable_global_barriers:
                     logger.debug("%s: barrier insertion: global" % kernel.name)
-                    gen_sched = insert_barriers(kernel, gen_sched,
-                            synchronization_kind="global", verify_only=True)
+                    gen_sched = insert_barriers(kernel, callables_table, gen_sched,
+                            synchronization_kind="global",
+                            verify_only=(not
+                                kernel.options.insert_gbarriers))
 
                 logger.debug("%s: barrier insertion: local" % kernel.name)
-                gen_sched = insert_barriers(kernel, gen_sched,
+                gen_sched = insert_barriers(kernel, callables_table, gen_sched,
                     synchronization_kind="local", verify_only=False)
                 logger.debug("%s: barrier insertion: done" % kernel.name)
 
@@ -2098,8 +2102,6 @@ def generate_loop_schedules_inner(kernel, callables_table, debug_args=None):
                 # Device mapper only gets run once.
                 new_kernel = map_schedule_onto_host_or_device(new_kernel)
 
-            from loopy.schedule.tools import add_extra_args_to_schedule
-            new_kernel = add_extra_args_to_schedule(new_kernel)
             yield new_kernel
 
             debug.start()
@@ -2157,10 +2159,10 @@ def get_one_linearized_kernel(kernel, callables_table):
         try:
             result = schedule_cache[sched_cache_key]
 
-            logger.debug("%s: schedule cache hit" % kernel.name)
+            logger.debug(f"{kernel.name}: schedule cache hit")
             from_cache = True
         except KeyError:
-            pass
+            logger.debug(f"{kernel.name}: schedule cache miss")
 
     if not from_cache:
         with ProcessLogger(logger, "%s: schedule" % kernel.name):

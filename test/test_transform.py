@@ -52,6 +52,24 @@ __all__ = [
 from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa
 
 
+# {{{ ContainsFloorDiv
+
+class ContainsFloorDiv(lp.symbolic.CombineMapper):
+    def combine(self, values):
+        return any(values)
+
+    def map_floor_div(self, expr):
+        return True
+
+    def map_variable(self, expr):
+        return False
+
+    def map_constant(self, expr):
+        return False
+
+# }}}
+
+
 @pytest.mark.parametrize("fix_parameters", (True, False))
 def test_chunk_iname(ctx_factory, fix_parameters):
     ctx = ctx_factory()
@@ -387,7 +405,8 @@ def test_precompute_confusing_subst_arguments(ctx_factory):
     assert "i_inner" not in get_dependencies(
             prog["precomputer"].substitutions["D"].expression)
     prog = lp.precompute(prog, "D", sweep_inames="j",
-            precompute_outer_inames="j, i_inner, i_outer")
+            precompute_outer_inames="j, i_inner, i_outer",
+            default_tag="l.auto")
 
     lp.auto_test_vs_ref(
             ref_prog, ctx, prog,
@@ -955,7 +974,7 @@ def test_diamond_tiling(ctx_factory, interactive=False):
         knl(queue, u=u_dev, dx=dx, dt=dx)
 
         u = u_dev.get()
-        import matplotlib.pyplot as plt
+        import matplotlib.pyplot as plt  # pylint: disable=import-error
         plt.imshow(u.T)
         plt.show()
     else:
@@ -1260,7 +1279,96 @@ def test_privatize_with_nonzero_lbound(ctx_factory):
     np.testing.assert_allclose(out.get()[10:14], np.arange(10, 14))
 
 
-def test_simplify_indices(ctx_factory):
+def test_unprivatize():
+    knl = lp.make_kernel(
+        ["{[icoeff]: 0<=icoeff<10}",
+         "{[tgt_box]: 0<=tgt_box<20}",
+         "{[src_box]: 0<=src_box<30}"],
+        """
+        for tgt_box
+            <> temp[icoeff] = 0 {dup=icoeff}
+            for src_box
+               for icoeff
+                   temp[icoeff] = temp[icoeff] + \
+                        deriv[icoeff] * src_coeffs[src_box, icoeff]
+               end
+            end
+            tgt_coeffs[tgt_box, icoeff] = temp[icoeff] {dup=icoeff}
+        end
+        """,
+        name="unprivatize_m2l",
+        seq_dependencies=True)
+
+    knl = lp.rename_inames(knl, ["icoeff_0", "icoeff", "icoeff_1"], "icoeff0")
+    knl = lp.unprivatize_temporaries_with_inames(knl, {"icoeff0"}, {"temp"})
+    assert knl["unprivatize_m2l"].temporary_variables["temp"].shape == ()
+
+
+def test_unprivatize_error():
+    knl = lp.make_kernel(
+        ["{[i]: 0<=i<10}",
+         "{[j]: 0<=j<10}",
+         "{[tgt_box]: 0<=tgt_box<20}",
+         "{[src_box]: 0<=src_box<30}"],
+        """
+        for tgt_box
+            <> temp[i, j] = 0 {dup=i:j}
+            for src_box
+               for i, j
+                   temp[j, i] = temp[i, j] + deriv[i, j] * \
+                        src_coeffs[src_box, i, j]
+               end
+            end
+            tgt_coeffs[tgt_box, i, j] = temp[i, j] {dup=i:j}
+        end
+        """,
+        name="unprivatize_m2l",
+        seq_dependencies=True)
+
+    knl = lp.rename_inames(knl, ["i_0", "i_1", "i"], "i0")
+    knl = lp.rename_inames(knl, ["j_0", "j_1", "j"], "j0")
+    with pytest.raises(lp.LoopyError):
+        knl = lp.unprivatize_temporaries_with_inames(knl, {"i0"}, {"temp"})
+    with pytest.raises(lp.LoopyError):
+        knl = lp.unprivatize_temporaries_with_inames(knl, {"i0", "j0"}, {"temp"})
+
+
+def test_privatize_unprivatize_roundtrip():
+    knl1 = lp.make_kernel(
+        ["{[i]: 0<=i<10}",
+         "{[imatrix]: 0<=imatrix<20}",
+         "{[k]: 0<=k<30}"],
+        """
+        for imatrix, i
+            <> acc[imatrix] = 0
+            for k
+                acc[imatrix] = acc[imatrix] + a[imatrix, i, k] * vec[k]
+            end
+        end
+        """,
+        name="privatize_unprivatize_roundtrip",
+        seq_dependencies=True)
+
+    knl2 = lp.make_kernel(
+        ["{[i]: 0<=i<10}",
+         "{[imatrix]: 0<=imatrix<20}",
+         "{[k]: 0<=k<30}"],
+        """
+        for imatrix, i
+            <> acc = 0
+            for k
+                acc = acc + a[imatrix, i, k] * vec[k]
+            end
+        end
+        """,
+        name="privatize_unprivatize_roundtrip",
+        seq_dependencies=True)
+
+    assert knl2 == lp.unprivatize_temporaries_with_inames(knl1, {"imatrix"}, {"acc"})
+    assert knl1 == lp.privatize_temporaries_with_inames(knl2, {"imatrix"}, {"acc"})
+
+
+def test_simplify_indices_when_inlining(ctx_factory):
     ctx = ctx_factory()
     twice = lp.make_function(
         "{[i, j]: 0<=i<10 and 0<=j<4}",
@@ -1276,21 +1384,30 @@ def test_simplify_indices(ctx_factory):
                            shape=(10, 4),
                            dtype=np.float64)])
 
-    class ContainsFloorDiv(lp.symbolic.CombineMapper):
-        def combine(self, values):
-            return any(values)
-
-        def map_floor_div(self, expr):
-            return True
-
-        def map_variable(self, expr):
-            return False
-
-        def map_constant(self, expr):
-            return False
-
     knl = lp.merge([knl, twice])
-    knl = lp.inline_callable_kernel(knl, "zerozerozeroonezeroify")
+    inlined_knl = lp.inline_callable_kernel(knl, "zerozerozeroonezeroify")
+    contains_floordiv = ContainsFloorDiv()
+
+    print(inlined_knl)
+
+    assert all(not contains_floordiv(insn.expression)
+               for insn in inlined_knl.default_entrypoint.instructions
+               if isinstance(insn, lp.MultiAssignmentBase))
+
+    lp.auto_test_vs_ref(knl, ctx, inlined_knl)
+
+
+def test_simplify_indices(ctx_factory):
+    ctx = ctx_factory()
+    knl = lp.make_kernel(
+        "{[j]: 0<=j<10}",
+        """
+        <> b = Z[0]  {id=b}
+        Y[j] = X[10*(j//10 + b) + j - 10*b]  {dep=b}
+        """, [lp.GlobalArg("X,Y,Z",
+                           shape=(10,),
+                           dtype=np.int32)])
+
     simplified_knl = lp.simplify_indices(knl)
     contains_floordiv = ContainsFloorDiv()
 
@@ -1410,9 +1527,103 @@ def test_precompute_with_gbarrier(ctx_factory):
                              "x",
                              sweep_inames=["j1"],
                              within="writes:out1",
-                             prefetch_insn_id="x_fetch")
+                             prefetch_insn_id="x_fetch",
+                             default_tag="l.auto")
     assert "gbarrier" in t_unit.default_entrypoint.id_to_insn["x_fetch"].depends_on
 
+    lp.auto_test_vs_ref(ref_t_unit, ctx, t_unit)
+
+
+def test_buffer_array_with_within(ctx_factory):
+    ctx = ctx_factory()
+
+    t_unit = lp.make_kernel(
+        "{[i]: 0<=i<10}",
+        """
+        out[i] = 2 * x[i] {id=insn}
+        """)
+
+    t_unit = lp.add_dtypes(t_unit, {"x": "float64"})
+    ref_t_unit = t_unit
+    t_unit = lp.buffer_array(t_unit, "out", buffer_inames=[], within="id:insn")
+    lp.auto_test_vs_ref(ref_t_unit, ctx, t_unit)
+
+
+def test_redn_iname_unique_preserves_metadata():
+    class FooTag(Tag):
+        """
+        foo!
+        """
+
+    t_unit = lp.make_kernel(
+        "{[i]: 0<=i<10}",
+        """
+        out = sum(i, 2*i) + sum(i, 3*i) {id=w_out}
+        """)
+
+    t_unit = lp.tag_inames(t_unit, {"i": FooTag()})
+    t_unit = lp.make_reduction_inames_unique(t_unit)
+    assert "i_0" in t_unit.default_entrypoint.id_to_insn["w_out"].reduction_inames()
+    assert t_unit.default_entrypoint.inames["i_0"].tags_of_type(FooTag)  # fails
+
+
+def test_prefetch_to_same_temp_var(ctx_factory):
+    ctx = ctx_factory()
+
+    # loopy.git<=5d83454 would raise with a dtype mismatch during the second
+    # prefetch call.
+    t_unit = lp.make_kernel(
+        "{[i0, i1, j0, j1]: 0<=i0, i1<1000 and 0<=j0, j1<10}",
+        """
+        y0[i0] = sum(j0, A[j0] * x0[i0, j0])
+        y1[i1] = sum(j1, A[j1] * x1[i1, j1])
+        """)
+    t_unit = lp.add_dtypes(t_unit, {"A": "float64",
+                                    "x0": "float64",
+                                    "x1": "float64"})
+    ref_tunit = t_unit
+
+    t_unit = lp.add_prefetch(t_unit,
+                             "A",
+                             sweep_inames=["j0"],
+                             within="iname:i0",
+                             temporary_name="A_fetch",
+                             prefetch_insn_id="first_fetch"
+                             )
+    t_unit = lp.add_prefetch(t_unit,
+                             "A",
+                             sweep_inames=["j1"],
+                             within="iname:i1",
+                             temporary_name="A_fetch",
+                             prefetch_insn_id="second_fetch"
+                             )
+    t_unit = lp.add_dependency(t_unit,
+                               "writes:y1 or writes:y0",
+                               "id:second_fetch or id:first_fetch")
+    t_unit = lp.add_dependency(t_unit,
+                               "id:first_fetch",
+                               "id:second_fetch")
+
+    t_unit = lp.add_dependency(t_unit, "id:first_fetch", "id:second_fetch")
+    lp.auto_test_vs_ref(ref_tunit, ctx, t_unit)
+
+
+def test_concatenate_arrays(ctx_factory):
+    ctx = ctx_factory()
+
+    t_unit = lp.make_kernel(
+        "{[i]: 0<=i<10}",
+        """
+        <> a[i] = x[i]    {id=init_a}
+        <> b[i] = y[i]    {id=init_b}
+        out[i] = a[i] + b[i] {id=insn,dep=init_a:init_b}
+        """)
+
+    t_unit = lp.add_dtypes(t_unit, {"x": "float64", "y": "float64"})
+    ref_t_unit = t_unit
+
+    t_unit = lp.concatenate_arrays(t_unit, ["a", "b"], "c")
+    assert t_unit.default_entrypoint.temporary_variables["c"].shape == (20,)
     lp.auto_test_vs_ref(ref_t_unit, ctx, t_unit)
 
 

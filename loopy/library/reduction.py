@@ -21,11 +21,13 @@ THE SOFTWARE.
 """
 
 
+from typing import ClassVar, Tuple
+
 from pymbolic import var
-from loopy.symbolic import ResolvedFunction
-from loopy.kernel.function_interface import ScalarCallable
 import numpy as np
 
+from loopy.symbolic import ResolvedFunction
+from loopy.kernel.function_interface import ScalarCallable
 from loopy.symbolic import FunctionIdentifier
 from loopy.diagnostic import LoopyError
 from loopy.types import NumpyType
@@ -188,8 +190,15 @@ def get_le_neutral(dtype):
         elif dtype.numpy_dtype.itemsize == 8:
             # 64 bit integer
             return var("LONG_MAX")
-    else:
-        raise NotImplementedError("less")
+    elif dtype.numpy_dtype.kind == "u":
+        if dtype.numpy_dtype.itemsize == 4:
+            # 32 bit integer
+            return var("UINT_MAX")
+        elif dtype.numpy_dtype.itemsize == 8:
+            # 64 bit integer
+            return var("ULONG_MAX")
+
+    raise NotImplementedError(f"neutral element for <= and {dtype}")
 
 
 def get_ge_neutral(dtype):
@@ -211,8 +220,10 @@ def get_ge_neutral(dtype):
         elif dtype.numpy_dtype.itemsize == 8:
             # 64 bit integer
             return var("LONG_MIN")
-    else:
-        raise NotImplementedError("less")
+    elif dtype.numpy_dtype.kind == "u":
+        return 0
+
+    raise NotImplementedError(f"neutral element for >= and {dtype}")
 
 
 class MaxReductionOperation(ScalarReductionOperation):
@@ -262,7 +273,7 @@ class MinReductionOperation(ScalarReductionOperation):
 # {{{ base class for symbolic reduction ops
 
 class ReductionOpFunction(FunctionIdentifier):
-    init_arg_names = ("reduction_op",)
+    init_arg_names: ClassVar[Tuple[str, ...]] = ("reduction_op",)
 
     def __init__(self, reduction_op):
         self.reduction_op = reduction_op

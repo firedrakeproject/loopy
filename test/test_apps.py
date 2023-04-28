@@ -179,9 +179,7 @@ def test_convolution_with_nonzero_base(ctx_factory):
 # }}}
 
 
-def test_rob_stroud_bernstein(ctx_factory):
-    ctx = ctx_factory()
-
+def test_rob_stroud_bernstein():
     # NOTE: tmp would have to be zero-filled beforehand
 
     knl = lp.make_kernel(
@@ -218,7 +216,7 @@ def test_rob_stroud_bernstein(ctx_factory):
                 "..."
                 ],
             assumptions="deg>=0 and nels>=1",
-            target=lp.PyOpenCLTarget(ctx.devices[0])
+            target=lp.PyOpenCLTarget()
             )
 
     knl = lp.fix_parameters(knl, nqp1d=7, deg=4)
@@ -234,10 +232,7 @@ def test_rob_stroud_bernstein(ctx_factory):
     print(lp.generate_code_v2(knl))
 
 
-def test_rob_stroud_bernstein_full(ctx_factory):
-    #logging.basicConfig(level=logging.DEBUG)
-    ctx = ctx_factory()
-
+def test_rob_stroud_bernstein_full():
     # NOTE: result would have to be zero-filled beforehand
 
     knl = lp.make_kernel(
@@ -298,7 +293,7 @@ def test_rob_stroud_bernstein_full(ctx_factory):
             "..."
             ],
         assumptions="deg>=0 and nels>=1",
-        target=lp.PyOpenCLTarget(ctx.devices[0])
+        target=lp.PyOpenCLTarget()
         )
 
     knl = lp.fix_parameters(knl, nqp1d=7, deg=4)
@@ -531,7 +526,7 @@ def test_fd_demo():
     #n = 1000
     #u = cl.clrandom.rand(queue, (n+2, n+2), dtype=np.float32)
 
-    knl = lp.set_options(knl, write_cl=True)
+    knl = lp.set_options(knl, write_code=True)
     knl = lp.add_and_infer_dtypes(knl, dict(u=np.float32))
     code, inf = lp.generate_code(knl)
     print(code)
@@ -694,7 +689,32 @@ def test_prefetch_through_indirect_access():
     knl = lp.prioritize_loops(knl, "i,j,k")
 
     with pytest.raises(LoopyError):
-        knl = lp.add_prefetch(knl, "map1[:, j]")
+        knl = lp.add_prefetch(knl, "map1[:, j]", default_tag="l.auto")
+
+
+def test_unsigned_types_to_mod():
+    knl = lp.make_kernel("{[i]: 0<=i<10}",
+        """
+            <> c = b[i] {id=init,dup=i}
+            a[i] = i % c {dep=init}
+        """,
+        [lp.GlobalArg("a", shape=(10,), dtype=np.uint32),
+         lp.GlobalArg("b", shape=(10,), dtype=np.uint32)]
+    )
+    assert "loopy_mod" not in lp.generate_code_v2(knl).device_code()
+
+
+def test_abs_as_index():
+    knl = lp.make_kernel(
+        ["{[i]: 0<=i<10}"],
+        """
+        b[i] = a[abs(5-i)]
+        """,
+        [
+            lp.GlobalArg("a", np.float32),
+            ...
+            ])
+    print(lp.generate_code_v2(knl).device_code())
 
 
 if __name__ == "__main__":

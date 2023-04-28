@@ -56,6 +56,14 @@ class ExpressionToCExpressionMapper(IdentityMapper):
     """
     Mapper that converts a loopy-semantic expression to a C-semantic expression
     with typecasts, appropriate arithmetic semantic mapping, etc.
+
+
+    .. note::
+
+        - All mapper methods take in an extra argument called *type_context*.
+          The purpose of *type_context* is to inform the method about the
+          expected type for untyped expressions such as python scalars. The
+          type of the expressions takes precedence over *type_context*.
     """
     def __init__(self, codegen_state, fortran_abi=False, type_inf_mapper=None):
         self.kernel = codegen_state.kernel
@@ -155,7 +163,7 @@ class ExpressionToCExpressionMapper(IdentityMapper):
                         from loopy.kernel.array import _apply_offset
                         from loopy.symbolic import simplify_using_aff
 
-                        subscript = _apply_offset(0, expr.name, arg)
+                        subscript = _apply_offset(0, arg)
                         result = self.make_subscript(
                                 arg,
                                 var(expr.name),
@@ -215,7 +223,7 @@ class ExpressionToCExpressionMapper(IdentityMapper):
         index_tuple = tuple(
                 simplify_using_aff(self.kernel, idx) for idx in expr.index_tuple)
 
-        access_info = get_access_info(self.kernel.target, ary, index_tuple,
+        access_info = get_access_info(self.kernel, ary, index_tuple,
                 lambda expr: evaluate(expr, self.codegen_state.var_subst_map),
                 self.codegen_state.vectorization_info)
 
@@ -332,9 +340,13 @@ class ExpressionToCExpressionMapper(IdentityMapper):
         assumptions, domain = isl.align_two(assumption_non_param, domain)
         domain = domain & assumptions
 
+        num_type = self.infer_type(expr.numerator)
+        den_type = self.infer_type(expr.denominator)
         from loopy.isl_helpers import is_nonnegative
-        num_nonneg = is_nonnegative(expr.numerator, domain)
-        den_nonneg = is_nonnegative(expr.denominator, domain)
+        num_nonneg = is_nonnegative(expr.numerator, domain) \
+            or num_type.numpy_dtype.kind == "u"
+        den_nonneg = is_nonnegative(expr.denominator, domain) \
+            or den_type.numpy_dtype.kind == "u"
 
         result_dtype = self.infer_type(expr)
         suffix = result_dtype.numpy_dtype.type.__name__
@@ -382,7 +394,7 @@ class ExpressionToCExpressionMapper(IdentityMapper):
         result_type = self.infer_type(expr)
         return type(expr)(
                 self.rec(expr.condition, type_context,
-                         to_loopy_type(np.bool8)),
+                         to_loopy_type(np.bool_)),
                 self.rec(expr.then, type_context, result_type),
                 self.rec(expr.else_, type_context, result_type),
                 )
@@ -406,13 +418,23 @@ class ExpressionToCExpressionMapper(IdentityMapper):
         from loopy.symbolic import Literal
 
         if isinstance(expr, (complex, np.complexfloating)):
-            real = self.rec(expr.real)
-            imag = self.rec(expr.imag)
+            real = self.rec(expr.real, type_context)
+            imag = self.rec(expr.imag, type_context)
             iota = p.Variable("I" if "I" not in self.kernel.all_variable_names()
                     else "_Complex_I")
             return real + imag*iota
         elif np.isnan(expr):
-            return p.Variable("NAN")
+            from warnings import warn
+            warn("Encountered 'bare' floating point NaN value. Since NaN != NaN,"
+                 " this leads to problems with cache retrieval."
+                 " Consider using `pymbolic.primitives.NaN` instead of `math.nan`."
+                 " The generated code will be equivalent with the added benefit"
+                 " of sound pickling/unpickling of kernel objects.")
+            from pymbolic.primitives import NaN
+            if not isinstance(expr, np.generic):
+                return self.map_nan(NaN(), type_context)
+            else:
+                return self.map_nan(NaN(expr.dtype.type), type_context)
         elif np.isneginf(expr):
             return -p.Variable("INFINITY")
         elif np.isinf(expr):
@@ -540,6 +562,35 @@ class ExpressionToCExpressionMapper(IdentityMapper):
     def map_local_hw_index(self, expr, type_context):
         raise LoopyError("plain C does not have local hw axes")
 
+    def map_nan(self, expr, type_context):
+        from loopy.types import NumpyType
+        if expr.data_type is None:
+            if type_context == "f":
+                return p.Variable("NAN")
+            elif type_context == "d":
+                registry = self.codegen_state.ast_builder.target.get_dtype_registry()
+                lpy_type = NumpyType(np.dtype(np.float32))
+                cast = var("(%s)" % registry.dtype_to_ctype(lpy_type))
+                return cast(p.Variable("NAN"))
+            else:
+                raise NotImplementedError("lowering NaN with type context"
+                                          f" '{type_context}'.")
+        else:
+            if isinstance(expr.data_type(float("nan")), np.float32):
+                return p.Variable("NAN")
+            elif isinstance(expr.data_type(float("nan")), np.floating):
+                registry = self.codegen_state.ast_builder.target.get_dtype_registry()
+                lpy_type = NumpyType(np.dtype(expr.data_type))
+                cast = var("(%s)" % registry.dtype_to_ctype(lpy_type))
+                return cast(p.Variable("NAN"))
+            elif isinstance(expr.data_type(float("nan")), np.complexfloating):
+                real_dtype = np.empty(0, dtype=expr.data_type).real.dtype.type
+                return self.map_constant(real_dtype("nan") + expr.data_type(1j),
+                                         type_context)
+            else:
+                raise NotImplementedError(f"{type(self.kernel.target)} does not"
+                                          f" support NaNs of type {expr.data_type}.")
+
 # }}}
 
 
@@ -632,9 +683,13 @@ class CExpressionToCodeMapper(RecursiveMapper):
     map_max = map_min
 
     def map_if(self, expr, enclosing_prec):
-        from pymbolic.mapper.stringifier import PREC_NONE
+        from pymbolic.mapper.stringifier import PREC_NONE, PREC_CALL
         return "({} ? {} : {})".format(
-                self.rec(expr.condition, PREC_NONE),
+                # Force parentheses around the condition to prevent compiler
+                # warnings regarding precedence (e.g. with POCL 1.8/LLVM 12):
+                # "warning: pocl-cache/tempfile_BYDWne.cl:96:2241: operator '?:'
+                # has lower precedence than '*'; '*' will be evaluated first"
+                self.rec(expr.condition, PREC_CALL),
                 self.rec(expr.then, PREC_NONE),
                 self.rec(expr.else_, PREC_NONE),
                 )

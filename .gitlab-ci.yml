@@ -112,16 +112,14 @@ Pytest POCL Examples:
   stage: test
   script: |
     export PYOPENCL_TEST=portable:pthread
-    export EXTRA_INSTALL="pybind11 numpy mako pyvisfile matplotlib ipykernel nbconvert"
+    export EXTRA_INSTALL="pybind11 numpy mako"
 
     curl -L -O https://tiker.net/ci-support-v0
     . ./ci-support-v0
-
     build_py_project_in_venv
 
-    install_ispc
-
-    . ./build-py-project-and-run-examples.sh
+    . ./.ci/examples-funcs.sh
+    install_example_prereqs
     run_py_examples
     run_ipynb_examples
     run_floopy_examples
@@ -149,11 +147,14 @@ Pylint:
 
 Documentation:
   stage: deploy
-  script:
-  - PROJECT=loopy
-  - EXTRA_INSTALL="pybind11 numpy"
-  - curl -L -O https://gitlab.tiker.net/inducer/ci-support/raw/main/build-docs.sh
-  - ". ./build-docs.sh"
+  script: |
+    EXTRA_INSTALL="pybind11 numpy"
+    curl -L -O https://tiker.net/ci-support-v0
+    . ci-support-v0
+    build_py_project_in_venv
+    build_docs
+    build_asv_html
+    maybe_upload_docs
   tags:
   - python3
 
@@ -162,6 +163,19 @@ Flake8:
   script:
   - curl -L -O https://gitlab.tiker.net/inducer/ci-support/raw/main/prepare-and-run-flake8.sh
   - . ./prepare-and-run-flake8.sh "$CI_PROJECT_NAME" test examples
+  tags:
+  - python3
+  except:
+  - tags
+
+Mypy:
+  script: |
+    EXTRA_INSTALL="pybind11 numpy"
+    curl -L -O https://tiker.net/ci-support-v0
+    . ./ci-support-v0
+    build_py_project_in_venv
+    python -m pip install mypy
+    ./run-mypy.sh
   tags:
   - python3
   except:
@@ -182,3 +196,15 @@ Benchmarks:
   - benchmark
   except:
   - tags
+
+Downstream:
+  parallel:
+    matrix:
+    - DOWNSTREAM_PROJECT: [meshmode, grudge, pytential, pytato]
+  tags:
+  - large-node
+  - "docker-runner"
+  script: |
+    curl -L -O https://tiker.net/ci-support-v0
+    . ./ci-support-v0
+    test_downstream "$DOWNSTREAM_PROJECT"

@@ -151,6 +151,13 @@ class Options(ImmutableRecord):
         allowing for tweaks before the code is passed on to
         the target for compilation.
 
+    .. attribute:: allow_fp_reordering
+
+        Allow re-ordering of floating point arithmetic. Re-ordering may
+        give different results as floating point arithmetic is not
+        associative in addition and mulitplication. Default is *True*.
+        Note that the implementation of this option is currently incomplete.
+
     .. attribute:: build_options
 
         Options to pass to the target compiler when building the kernel.
@@ -181,6 +188,12 @@ class Options(ImmutableRecord):
         any out-of-bounds accesses.
 
         If equal to ``"no_check"``, then no check is performed.
+
+    .. attribute:: insert_gbarriers
+
+        If *True*, based on the memory dependency between variables in the
+        global address space loopy will insert global barriers to avoid
+        RAW, WAR and WAW races.
     """
 
     _legacy_options_map = {
@@ -234,11 +247,13 @@ class Options(ImmutableRecord):
                     # Considered enabled if non-empty.
                     or bool(os.environ.get("_LOOPY_SKIP_ARG_CHECKS"))),
                 no_numpy=kwargs.get("no_numpy", False),
-                cl_exec_manage_array_events=kwargs.get("no_numpy", True),
+                cl_exec_manage_array_events=kwargs.get("cl_exec_manage_array_events",
+                    True),
                 return_dict=kwargs.get("return_dict", False),
                 write_wrapper=kwargs.get("write_wrapper", False),
                 write_code=kwargs.get("write_code", False),
                 edit_code=kwargs.get("edit_code", False),
+                allow_fp_reordering=kwargs.get("allow_fp_reordering", True),
                 build_options=kwargs.get("build_options", []),
                 allow_terminal_colors=kwargs.get("allow_terminal_colors",
                     allow_terminal_colors_def),
@@ -250,6 +265,8 @@ class Options(ImmutableRecord):
                     "enforce_variable_access_ordered", True),
                 enforce_array_accesses_within_bounds=kwargs.get(
                     "enforce_array_accesses_within_bounds", True),
+                insert_gbarriers=kwargs.get(
+                    "insert_gbarriers", False),
                 )
 
     # {{{ legacy compatibility

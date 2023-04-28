@@ -20,14 +20,24 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from loopy.diagnostic import LoopyError
+from warnings import warn
+
+from dataclasses import dataclass, replace
+
+from typing import Optional, Tuple, Dict
+
+import numpy as np
+
 from islpy import dim_type
 
-from loopy.kernel.data import ImageArg
-
 from pytools import MovedFunctionDeprecationWrapper
-from loopy.translation_unit import (TranslationUnit,
-                                    for_each_kernel)
+
+from loopy.diagnostic import LoopyError
+from loopy.kernel.data import ImageArg, auto, TemporaryVariable
+
+from loopy.types import LoopyType
+from loopy.typing import ExpressionT
+from loopy.translation_unit import TranslationUnit, for_each_kernel
 from loopy.kernel import LoopKernel
 from loopy.kernel.function_interface import CallableKernel, ScalarCallable
 
@@ -154,101 +164,8 @@ def add_prefetch_for_single_kernel(kernel, callables_table, var_name,
         fetch_outer_inames=None,
         prefetch_insn_id=None,
         within=None):
-    """Prefetch all accesses to the variable *var_name*, with all accesses
-    being swept through *sweep_inames*.
+    """See :func:`add_prefetch` for detailed, user-facing documentation."""
 
-    :arg var_name: A string, the name of the variable being prefetched.
-        This may be a 'tagged variable name' (such as ``field$mytag``
-        to restrict the effect of the operation to only variable accesses
-        with a matching tag.
-
-        This may also be a subscripted version of the variable, in which
-        case this access dictates the footprint that is prefetched,
-        e.g. ``A[:,:]`` or ``field[i,j,:,:]``. In this case, accesses
-        in the kernel are disregarded.
-
-    :arg sweep_inames: A list of inames, or a comma-separated string of them.
-        This routine 'sweeps' all accesses to *var_name* through all allowed
-        values of the *sweep_inames* to generate a footprint. All values
-        in this footprint are then stored in a temporary variable, and
-        the original variable accesses replaced with accesses to this
-        temporary.
-
-    :arg dim_arg_names: List of names representing each fetch axis.
-        These names show up as inames in the generated fetch code
-
-    :arg default_tag: The :ref:`implementation tag <iname-tags>` to
-        assign to the inames driving the prefetch code. Use *None* to
-        leave them undefined (to assign them later by hand). The current
-        default will make them local axes and automatically split them to
-        fit the work group size, but this default will disappear in favor
-        of simply leaving them untagged in 2019.x. For 2018.x, a warning
-        will be issued if no *default_tag* is specified.
-
-    :arg rule_name: base name of the generated temporary variable.
-    :arg temporary_name: The name of the temporary to be used.
-    :arg temporary_address_space: The :class:`AddressSpace` to use for the
-        temporary.
-    :arg footprint_subscripts: A list of tuples indicating the index (i.e.
-        subscript) tuples used to generate the footprint.
-
-        If only one such set of indices is desired, this may also be specified
-        directly by putting an index expression into *var_name*. Substitutions
-        such as those occurring in dimension splits are recorded and also
-        applied to these indices.
-
-    :arg fetch_bounding_box: To fit within :mod:`loopy`'s execution model,
-        the 'footprint' of the fetch currently has to be a convex set.
-        Sometimes this is not the case, e.g. for a high-order stencil::
-
-              o
-              o
-            ooooo
-              o
-              o
-
-        The footprint of the stencil when 'swept' over a base domain
-        would look like this, and because of the 'missing corners',
-        this set is not convex::
-
-              oooooooooo
-              oooooooooo
-            oooooooooooooo
-            oooooooooooooo
-            oooooooooooooo
-            oooooooooooooo
-              oooooooooo
-              oooooooooo
-
-        Passing ``fetch_bounding_box=True`` gives :mod:`loopy` permission
-        to instead fetch the 'bounding box' of the footprint, i.e.
-        this set in the stencil example::
-
-            OOooooooooooOO
-            OOooooooooooOO
-            oooooooooooooo
-            oooooooooooooo
-            oooooooooooooo
-            oooooooooooooo
-            OOooooooooooOO
-            OOooooooooooOO
-
-        Note the added corners marked with "``O``". The resulting footprint is
-        guaranteed to be convex.
-
-
-    :arg fetch_outer_inames: The inames within which the fetch
-        instruction is nested. If *None*, make an educated guess.
-
-    :arg fetch_insn_id: The ID of the instruction generated to perform the
-        prefetch.
-
-    :arg within: a stack match as understood by
-        :func:`loopy.match.parse_stack_match` to select the instructions where
-        *var_name* is to be prefetched.
-
-    This function internally uses :func:`extract_subst` and :func:`precompute`.
-    """
     assert isinstance(kernel, LoopKernel)
     if sweep_inames is None:
         sweep_inames = []
@@ -383,6 +300,101 @@ def add_prefetch_for_single_kernel(kernel, callables_table, var_name,
 
 
 def add_prefetch(program, *args, **kwargs):
+    """Prefetch all accesses to the variable *var_name*, with all accesses
+    being swept through *sweep_inames*.
+
+    :arg var_name: A string, the name of the variable being prefetched.
+        This may be a 'tagged variable name' (such as ``field$mytag``
+        to restrict the effect of the operation to only variable accesses
+        with a matching tag.
+
+        This may also be a subscripted version of the variable, in which
+        case this access dictates the footprint that is prefetched,
+        e.g. ``A[:,:]`` or ``field[i,j,:,:]``. In this case, accesses
+        in the kernel are disregarded.
+
+    :arg sweep_inames: A list of inames, or a comma-separated string of them.
+        This routine 'sweeps' all accesses to *var_name* through all allowed
+        values of the *sweep_inames* to generate a footprint. All values
+        in this footprint are then stored in a temporary variable, and
+        the original variable accesses replaced with accesses to this
+        temporary.
+
+    :arg dim_arg_names: List of names representing each fetch axis.
+        These names show up as inames in the generated fetch code
+
+    :arg default_tag: The :ref:`implementation tag <iname-tags>` to
+        assign to the inames driving the prefetch code. Use *None* to
+        leave them undefined (to assign them later by hand). The current
+        default will make them local axes and automatically split them to
+        fit the work group size, but this default will disappear in favor
+        of simply leaving them untagged in 2019.x. For 2018.x, a warning
+        will be issued if no *default_tag* is specified.
+
+    :arg rule_name: base name of the generated temporary variable.
+    :arg temporary_name: The name of the temporary to be used.
+    :arg temporary_address_space: The :class:`AddressSpace` to use for the
+        temporary.
+    :arg footprint_subscripts: A list of tuples indicating the index (i.e.
+        subscript) tuples used to generate the footprint.
+
+        If only one such set of indices is desired, this may also be specified
+        directly by putting an index expression into *var_name*. Substitutions
+        such as those occurring in dimension splits are recorded and also
+        applied to these indices.
+
+    :arg fetch_bounding_box: To fit within :mod:`loopy`'s execution model,
+        the 'footprint' of the fetch currently has to be a convex set.
+        Sometimes this is not the case, e.g. for a high-order stencil::
+
+              o
+              o
+            ooooo
+              o
+              o
+
+        The footprint of the stencil when 'swept' over a base domain
+        would look like this, and because of the 'missing corners',
+        this set is not convex::
+
+              oooooooooo
+              oooooooooo
+            oooooooooooooo
+            oooooooooooooo
+            oooooooooooooo
+            oooooooooooooo
+              oooooooooo
+              oooooooooo
+
+        Passing ``fetch_bounding_box=True`` gives :mod:`loopy` permission
+        to instead fetch the 'bounding box' of the footprint, i.e.
+        this set in the stencil example::
+
+            OOooooooooooOO
+            OOooooooooooOO
+            oooooooooooooo
+            oooooooooooooo
+            oooooooooooooo
+            oooooooooooooo
+            OOooooooooooOO
+            OOooooooooooOO
+
+        Note the added corners marked with "``O``". The resulting footprint is
+        guaranteed to be convex.
+
+
+    :arg fetch_outer_inames: The inames within which the fetch
+        instruction is nested. If *None*, make an educated guess.
+
+    :arg fetch_insn_id: The ID of the instruction generated to perform the
+        prefetch.
+
+    :arg within: a stack match as understood by
+        :func:`loopy.match.parse_stack_match` to select the instructions where
+        *var_name* is to be prefetched.
+
+    This function internally uses :func:`extract_subst` and :func:`precompute`.
+    """
     assert isinstance(program, TranslationUnit)
 
     new_callables = {}
@@ -576,7 +588,12 @@ def alias_temporaries(kernel, names, base_name_prefix=None,
     if base_name_prefix is None:
         base_name_prefix = "temp_storage"
 
-    vng = kernel.get_var_name_generator()
+    from pytools import UniqueNameGenerator
+    vng = UniqueNameGenerator(
+            kernel.all_variable_names()
+            | {tv.base_storage
+                for tv in kernel.temporary_variables.values()
+                if tv.base_storage is not None})
     base_name = vng(base_name_prefix)
 
     names_set = set(names)
@@ -621,7 +638,9 @@ def alias_temporaries(kernel, names, base_name_prefix=None,
                         .format(tv=tv.name))
 
             new_temporary_variables[tv.name] = \
-                    tv.copy(base_storage=base_name)
+                    tv.copy(
+                            base_storage=base_name,
+                            _base_storage_access_may_be_aliasing=False)
         else:
             new_temporary_variables[tv.name] = tv
 
@@ -949,5 +968,128 @@ def add_padding_to_avoid_bank_conflicts(kernel, device):
 
 # }}}
 
+
+# {{{ allocate_temporaries_for_base_storage
+
+@dataclass(frozen=True)
+class _BaseStorageInfo:
+    name: str
+    next_offset: ExpressionT
+    approx_nbytes: Optional[int] = None
+
+
+def _sym_max(a: ExpressionT, b: ExpressionT) -> ExpressionT:
+    from numbers import Number
+    if isinstance(a, Number) and isinstance(b, Number):
+        # https://github.com/python/mypy/issues/3186
+        return max(a, b)  # type: ignore[call-overload]
+    else:
+        from pymbolic.primitives import Max
+        return Max((a, b))
+
+
+@for_each_kernel
+def allocate_temporaries_for_base_storage(kernel: LoopKernel,
+        only_address_space: Optional[int] = None,
+        aliased=True,
+        max_nbytes: Optional[int] = None,
+        _implicitly_run=False,
+        ) -> LoopKernel:
+    from pytools import product
+
+    new_tvs = dict(kernel.temporary_variables)
+    made_changes = False
+
+    vng = kernel.get_var_name_generator()
+
+    name_aspace_dtype_to_bsi: Dict[Tuple[str, int, LoopyType], _BaseStorageInfo] = {}
+
+    for tv in sorted(
+            kernel.temporary_variables.values(),
+            key=lambda key_tv: key_tv.name):
+        if tv.base_storage and tv.initializer:
+            raise LoopyError(
+                    f"Temporary '{tv.name}' has both base_storage "
+                    "and an initializer. That's not allowed.")
+        if tv.offset and not tv.base_storage:
+            raise LoopyError(
+                    f"Temporary '{tv.name}' has an offset and no base_storage. "
+                    "That's not allowed.")
+
+        if (tv.base_storage
+                and tv.base_storage not in kernel.temporary_variables
+                and (
+                    only_address_space is None
+                    or tv.address_space == only_address_space)):
+            made_changes = True
+            assert isinstance(tv.dtype, LoopyType)
+
+            if tv.address_space is auto:
+                raise LoopyError("When allocating base storage for temporary "
+                        f"'{tv.name}', the address space of the temporary "
+                        "was not yet determined (set to 'auto').")
+
+            assert isinstance(tv.shape, tuple)
+            ary_size = product(si for si in tv.shape)
+            if isinstance(ary_size, (int, np.integer)):
+                approx_array_nbytes = tv.dtype.numpy_dtype.itemsize * ary_size
+            else:
+                # FIXME: Could use approximate values of ValueArgs
+                approx_array_nbytes = 0
+
+            bs_key = (tv.base_storage, tv.address_space, tv.dtype)
+            bsi = name_aspace_dtype_to_bsi.get(bs_key)
+
+            if bsi is None or (
+                    # are we out of space?
+                    not aliased
+                    and max_nbytes is not None
+                    and bsi.approx_nbytes is not None
+                    and bsi.approx_nbytes + approx_array_nbytes > max_nbytes):
+                bsi = name_aspace_dtype_to_bsi[bs_key] = _BaseStorageInfo(
+                        name=vng(tv.base_storage),
+                        next_offset=0,
+                        approx_nbytes=None if aliased else 0)
+
+                new_tvs[bsi.name] = TemporaryVariable(
+                    name=bsi.name,
+                    dtype=tv.dtype,
+                    shape=(0,),
+                    address_space=tv.address_space)
+
+            new_tvs[tv.name] = tv.copy(
+                base_storage=bsi.name,
+                offset=bsi.next_offset,
+                _base_storage_access_may_be_aliasing=(
+                    aliased if tv._base_storage_access_may_be_aliasing is None
+                    else tv._base_storage_access_may_be_aliasing))
+
+            bs_tv = new_tvs[bsi.name]
+            assert isinstance(bs_tv.shape, tuple)
+            bs_size, = bs_tv.shape
+            if aliased:
+                new_bs_size = _sym_max(bs_size, ary_size)
+            else:
+                new_bs_size = bs_size + ary_size
+
+                assert bsi.approx_nbytes is not None
+                name_aspace_dtype_to_bsi[bs_key] = replace(bsi,
+                    next_offset=bsi.next_offset + ary_size,
+                    approx_nbytes=bsi.approx_nbytes + approx_array_nbytes)
+
+            new_tvs[bsi.name] = new_tvs[bsi.name].copy(shape=(new_bs_size,))
+
+    if made_changes:
+        if _implicitly_run:
+            warn("Base storage allocation was performed implicitly during "
+                    "preprocessing. This is deprecated and will stop working "
+                    "in 2023. Call loopy.allocate_temporaries_for_base_storage "
+                    "explicitly to avoid this warning.", DeprecationWarning)
+
+        return kernel.copy(temporary_variables=new_tvs)
+    else:
+        return kernel
+
+# }}}
 
 # vim: foldmethod=marker

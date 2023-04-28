@@ -91,7 +91,12 @@ class CallableResolver(RuleAwareIdentityMapper):
         from loopy.symbolic import parse_tagged_name
 
         if not _is_a_reduction_op(expr.function):
+            # FIXME: We should have never used parse_tagged_name here.
             name, tag = parse_tagged_name(expr.function)
+
+            if tag:
+                raise LoopyError(f"tagged name in call: {expr.function}")
+
         else:
             if isinstance(expr.function, ResolvedFunction):
                 name = expr.function.function
@@ -315,14 +320,21 @@ class TranslationUnit(ImmutableRecord):
         """
         entrypoint = kwargs.get("entrypoint", None)
         if entrypoint is None:
-            if len(self.entrypoints) == 1:
+            nentrypoints = len(self.entrypoints)
+            if nentrypoints == 1:
                 entrypoint, = self.entrypoints
-            else:
+            elif nentrypoints > 1:
                 raise ValueError("TranslationUnit has multiple possible entrypoints."
                                  " The default entrypoint kernel is not uniquely"
                                  " determined. You may explicitly specify an "
                                  " entrypoint using the 'entrypoint' kwarg.")
-
+            elif nentrypoints == 0:
+                raise ValueError("TranslationUnit has no entrypoints, but"
+                                 f" {len(self.callables_table)} callables."
+                                 " Use TranslationUnit.with_entrypoints to"
+                                 " set an entrypoint.")
+            else:
+                raise AssertionError
         else:
             if entrypoint not in self.entrypoints:
                 raise LoopyError(f"'{entrypoint}' not in list of possible "
@@ -358,14 +370,13 @@ class TranslationUnit(ImmutableRecord):
         self._program_executor_cache = {}
 
     def __hash__(self):
-        if self._hash_value is not None:
-            return self._hash_value
+        # NOTE: _hash_value may vanish during pickling
+        if getattr(self, "_hash_value", None) is None:
+            from loopy.tools import LoopyKeyBuilder
+            key_hash = LoopyKeyBuilder.new_hash()
+            self.update_persistent_hash(key_hash, LoopyKeyBuilder())
+            self._hash_value = hash(key_hash.digest())
 
-        from loopy.tools import LoopyKeyBuilder
-        from pytools.persistent_dict import new_hash
-        key_hash = new_hash()
-        self.update_persistent_hash(key_hash, LoopyKeyBuilder())
-        self._hash_value = hash(key_hash.digest())
         return self._hash_value
 
 # }}}
@@ -586,7 +597,7 @@ class CallablesInferenceContext(ImmutableRecord):
 
         # }}}
 
-        # AIM: Preserve the entrypoints of *program*
+        # {{{ preserve the entrypoints of *program*
 
         # If there are any callees having old entrypoint names => mark them for
         # renaming
@@ -604,7 +615,9 @@ class CallablesInferenceContext(ImmutableRecord):
             todo_renames[e] = history[e]
             assert todo_renames[e] in program.entrypoints
 
-        # try to rollback the names as much as possible
+        # }}}
+
+        # try to roll back the names as much as possible
         for new_id in new_callable_ids:
             old_func_id = history[new_id]
             if (isinstance(old_func_id, str)

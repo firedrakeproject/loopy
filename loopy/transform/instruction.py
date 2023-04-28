@@ -191,8 +191,7 @@ def remove_instructions(kernel, insn_ids):
     if isinstance(insn_ids, MatchExpressionBase):
         within = insn_ids
 
-        insn_ids = set([insn.id for insn in kernel.instructions if
-            within(kernel, insn)])
+        insn_ids = {insn.id for insn in kernel.instructions if within(kernel, insn)}
 
     assert isinstance(insn_ids, set)
     id_to_insn = kernel.id_to_insn
@@ -226,6 +225,12 @@ def remove_instructions(kernel, insn_ids):
             depends_on = frozenset()
         else:
             depends_on = insn.depends_on
+
+        if ((not (depends_on & insn_ids))
+                and insn.no_sync_with == frozenset()):
+            # early exit if *insn* need not be updated.
+            new_insns.append(insn)
+            continue
 
         new_deps = reduce(frozenset.union,
                           (transitive_deps.get(d, frozenset([d]))
