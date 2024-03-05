@@ -29,6 +29,8 @@ import a few modules and set up a :class:`pyopencl.Context` and a
 
     >>> from warnings import filterwarnings, catch_warnings
     >>> filterwarnings('error', category=lp.LoopyWarning)
+    >>> from loopy.diagnostic import DirectCallUncachedWarning
+    >>> filterwarnings('ignore', category=DirectCallUncachedWarning)
 
     >>> ctx = cl.create_some_context(interactive=False)
     >>> queue = cl.CommandQueue(ctx)
@@ -1057,7 +1059,6 @@ earlier:
         acc_k = 0.0f;
       if (-1 + -16 * gid(0) + -1 * lid(0) + n >= 0)
         a_fetch[lid(0)] = a[16 * gid(0) + lid(0)];
-      barrier(CLK_LOCAL_MEM_FENCE) /* for a_fetch (insn_k_update depends on a_fetch_rule) */;
       if (-1 + -16 * gid(0) + -1 * lid(0) + n >= 0)
       {
         for (int k = 0; k <= 15; ++k)
@@ -1466,7 +1467,7 @@ We'll also request a prefetch--but suppose we only do so across the
 
 .. doctest::
 
-    >>> knl = lp.add_prefetch(knl, "a", "i_inner")
+    >>> knl = lp.add_prefetch(knl, "a", "i_inner", default_tag="l.auto")
 
 When we try to run our code, we get the following warning from loopy as a first
 sign that something is amiss:

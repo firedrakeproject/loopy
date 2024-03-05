@@ -86,6 +86,9 @@ class ReductionOperation:
     def __ne__(self, other):
         return not self.__eq__(other)
 
+    def __repr__(self) -> str:
+        return type(self).__name__
+
     @staticmethod
     def parse_result_type(target, op_type):
         try:
@@ -118,7 +121,7 @@ class ScalarReductionOperation(ReductionOperation):
         return hash((type(self),))
 
     def __eq__(self, other):
-        return type(self) == type(other)
+        return type(self) is type(other)
 
     def __str__(self):
         result = type(self).__name__.replace("ReductionOperation", "").lower()
@@ -359,7 +362,7 @@ class _SegmentedScalarReductionOperation(ReductionOperation):
         return hash(type(self))
 
     def __eq__(self, other):
-        return type(self) == type(other) and (self.inner_reduction ==
+        return type(self) is type(other) and (self.inner_reduction ==
                 other.inner_reduction)
 
     def __call__(self, dtypes, operand1, operand2, callables_table, target):
@@ -461,7 +464,7 @@ class _ArgExtremumReductionOperation(ReductionOperation):
         return hash(type(self))
 
     def __eq__(self, other):
-        return type(self) == type(other)
+        return type(self) is type(other)
 
     @property
     def arg_count(self):
