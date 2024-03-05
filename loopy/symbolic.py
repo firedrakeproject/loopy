@@ -24,7 +24,7 @@ THE SOFTWARE.
 """
 
 
-from typing import ClassVar, Tuple
+from typing import AbstractSet, ClassVar, Mapping, Sequence, Tuple
 from functools import reduce, cached_property
 from sys import intern
 import re
@@ -69,6 +69,7 @@ from pymbolic.parser import Parser as ParserBase
 from loopy.diagnostic import LoopyError
 from loopy.diagnostic import (ExpressionToAffineConversionError,
                               UnableToDetermineAccessRangeError)
+from loopy.typing import ExpressionT
 
 
 __doc__ = """
@@ -604,7 +605,7 @@ class TypedCSE(LoopyExpressionBase, p.CommonSubexpression):
     """
 
     def __init__(self, child, prefix=None, dtype=None):
-        super().__init__(child, prefix)
+        super().__init__(child, prefix=prefix, scope=p.cse_scope.EVALUATION)
         self.dtype = dtype
 
     def __getinitargs__(self):
@@ -1042,11 +1043,11 @@ def _get_dependencies_and_reduction_inames(expr):
     return deps, reduction_inames
 
 
-def get_dependencies(expr):
+def get_dependencies(expr: ExpressionT) -> AbstractSet[str]:
     return _get_dependencies_and_reduction_inames(expr)[0]
 
 
-def get_reduction_inames(expr):
+def get_reduction_inames(expr: ExpressionT) -> AbstractSet[str]:
     return _get_dependencies_and_reduction_inames(expr)[1]
 
 
@@ -1329,7 +1330,12 @@ class RuleAwareIdentityMapper(IdentityMapper):
                                          *args, **kwargs)
 
     @staticmethod
-    def make_new_arg_context(rule_name, arg_names, arguments, arg_context):
+    def make_new_arg_context(
+            rule_name: str,
+            arg_names: Sequence[str],
+            arguments: Sequence[ExpressionT],
+            arg_context: Mapping[str, ExpressionT]
+            ) -> Mapping[str, ExpressionT]:
         if len(arg_names) != len(arguments):
             raise RuntimeError("Rule '%s' invoked with %d arguments (needs %d)"
                     % (rule_name, len(arguments), len(arg_names), ))
@@ -1577,7 +1583,8 @@ class FunctionToPrimitiveMapper(UncachedIdentityMapper):
                     tag = None
 
                 return p.CommonSubexpression(
-                        self.rec(expr.parameters[0]), tag)
+                        self.rec(expr.parameters[0]), tag,
+                        scope=p.cse_scope.EVALUATION)
             else:
                 raise TypeError("cse takes two arguments")
 
@@ -1600,6 +1607,16 @@ class FunctionToPrimitiveMapper(UncachedIdentityMapper):
                 return If(*tuple(self.rec(p) for p in expr.parameters))
             else:
                 raise TypeError("if takes three arguments")
+
+        elif name in ["minimum", "maximum"]:
+            if len(expr.parameters) == 2:
+                from pymbolic.primitives import Min, Max
+                return {
+                    "minimum": Min,
+                    "maximum": Max
+                }[name](tuple(self.rec(p) for p in expr.parameters))
+            else:
+                raise TypeError(f"{name} takes two arguments")
 
         else:
             # see if 'name' is an existing reduction op

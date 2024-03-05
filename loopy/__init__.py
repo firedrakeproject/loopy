@@ -28,6 +28,7 @@ from loopy.translation_unit import for_each_kernel
 
 # {{{ imported user interface
 
+from loopy.typing import auto
 from loopy.kernel.instruction import (
         LegacyStringInstructionTag, UseStreamingStoreTag,
         MemoryOrdering,
@@ -37,7 +38,6 @@ from loopy.kernel.instruction import (
         MultiAssignmentBase, Assignment,
         CallInstruction, CInstruction, NoOpInstruction, BarrierInstruction)
 from loopy.kernel.data import (
-        auto,
         KernelArgument,
         ValueArg, ArrayArg, GlobalArg, ConstantArg, ImageArg,
         AddressSpace,
@@ -147,7 +147,6 @@ from loopy.codegen import (
 from loopy.codegen.result import (
         GeneratedProgram,
         CodeGenerationResult)
-from loopy.compiled import CompiledKernel
 from loopy.options import Options
 from loopy.auto_test import auto_test_vs_ref
 from loopy.frontend.fortran import (c_preprocess, parse_transformed_fortran,
@@ -162,7 +161,10 @@ from loopy.target.opencl import OpenCLTarget
 from loopy.target.pyopencl import PyOpenCLTarget
 from loopy.target.ispc import ISPCTarget
 
-from loopy.tools import Optional, t_unit_to_python, memoize_on_disk
+from loopy.tools import (Optional, t_unit_to_python, memoize_on_disk,
+                         clear_in_mem_caches)
+
+from loopy.target.execution import ExecutorBase
 
 
 __all__ = [
@@ -293,8 +295,6 @@ __all__ = [
         "gather_access_footprints", "gather_access_footprint_bytes",
         "Sync",
 
-        "CompiledKernel",
-
         "auto_test_vs_ref",
 
         "Options",
@@ -311,7 +311,9 @@ __all__ = [
         "PyOpenCLTarget", "ISPCTarget",
         "ASTBuilderBase",
 
-        "Optional", "memoize_on_disk",
+        "Optional", "memoize_on_disk", "clear_in_mem_caches",
+
+        "ExecutorBase",
 
         # {{{ from this file
 

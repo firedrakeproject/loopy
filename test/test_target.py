@@ -400,7 +400,7 @@ def test_nan_support(ctx_factory, target):
          lp.Assignment(parse("c"), parse("isnan(3.14)")),
          lp.Assignment(parse("d"), parse("isnan(0.0)")),
          lp.Assignment(parse("e"), NaN(np.float32)),
-         lp.Assignment(parse("f"), Variable("isnan")(NaN())),
+         lp.Assignment(parse("f"), Variable("isnan")(NaN(None))),
          lp.Assignment(parse("g"), NaN(np.complex64)),
          lp.Assignment(parse("h"), NaN(np.complex128)),
          ],
@@ -560,22 +560,6 @@ def test_input_args_are_required(ctx_factory):
         _ = knl(queue)
 
 
-def test_pyopencl_execution_accepts_device_scalars(ctx_factory):
-    import pyopencl.array as cla
-
-    ctx = ctx_factory()
-    cq = cl.CommandQueue(ctx)
-
-    knl = lp.make_kernel("{:}",
-                         """
-                         y = 2*x
-                         """)
-
-    evt, (out,) = knl(cq, x=cla.to_device(cq, np.asarray(21)))
-
-    np.testing.assert_allclose(out.get(), 42)
-
-
 def test_pyopencl_target_with_global_temps_with_base_storage(ctx_factory):
     from pyopencl.tools import ImmediateAllocator
 
@@ -640,7 +624,7 @@ def test_glibc_bessel_functions(dtype):
         second_kind_bessel[i] = bessel_yn(n, x[i])
         """, target=lp.ExecutableCWithGNULibcTarget(compiler))
 
-    if knl.target.compiler.toolchain.cc not in ["gcc", "g++"]:
+    if knl.target.compiler.toolchain.cc not in ["gcc", "g++"]:  # pylint: disable=no-member  # noqa: E501
         pytest.skip("GNU-libc not found.")
 
     knl = lp.fix_parameters(knl, n=2)

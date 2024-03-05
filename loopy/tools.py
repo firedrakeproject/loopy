@@ -20,6 +20,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+from typing import List
 import collections.abc as abc
 from functools import cached_property
 
@@ -27,7 +28,8 @@ from immutables import Map
 import islpy as isl
 import numpy as np
 from pytools import memoize_method, ProcessLogger
-from pytools.persistent_dict import KeyBuilder as KeyBuilderBase
+from pytools.persistent_dict import (
+        KeyBuilder as KeyBuilderBase, WriteOncePersistentDict)
 from loopy.symbolic import (UncachedWalkMapper as LoopyWalkMapper,
                             RuleAwareIdentityMapper)
 from pymbolic.mapper.persistent_hash import (
@@ -101,11 +103,6 @@ class LoopyKeyBuilder(KeyBuilderBase):
 
     update_for_defaultdict = update_for_dict
 
-    def update_for_frozenset(self, key_hash, key):
-        for set_key in sorted(key,
-                key=lambda obj: type(obj).__name__ + str(obj)):
-            self.rec(key_hash, set_key)
-
     def update_for_BasicSet(self, key_hash, key):  # noqa
         from islpy import Printer
         prn = Printer.to_str(key.get_ctx())
@@ -134,7 +131,7 @@ class PymbolicExpressionHashWrapper:
         self.expression = expression
 
     def __eq__(self, other):
-        return (type(self) == type(other)
+        return (type(self) is type(other)
                 and self.expression == other.expression)
 
     def __ne__(self, other):
@@ -862,7 +859,7 @@ def t_unit_to_python(t_unit, var_name="t_unit",
                                                                .callables_table))
                      for name, clbl in t_unit.callables_table.items()
                      if isinstance(clbl, CallableKernel)}
-    t_unit = t_unit.copy(callables_table=new_callables)
+    t_unit = t_unit.copy(callables_table=Map(new_callables))
 
     knl_python_code_srcs = [_kernel_to_python(clbl.subkernel,
                                               name in t_unit.entrypoints,
@@ -892,6 +889,18 @@ def t_unit_to_python(t_unit, var_name="t_unit",
 # }}}
 
 
+# {{{ cache management
+
+caches: List[WriteOncePersistentDict] = []
+
+
+def clear_in_mem_caches() -> None:
+    for cache in caches:
+        cache.clear_in_mem_cache()
+
+# }}}
+
+
 # {{{ memoize_on_disk
 
 def memoize_on_disk(func, key_builder_t=LoopyKeyBuilder):
@@ -908,6 +917,8 @@ def memoize_on_disk(func, key_builder_t=LoopyKeyBuilder):
             f"{key_builder_t.__qualname__}.{key_builder_t.__name__}"
             f"-v0-{DATA_MODEL_VERSION}"),
         key_builder=key_builder_t())
+
+    caches.append(transform_cache)
 
     @wraps(func)
     def wrapper(*args, **kwargs):

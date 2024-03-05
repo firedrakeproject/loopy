@@ -34,7 +34,7 @@ from loopy.diagnostic import LoopyError, warn
 from pytools import UniqueNameGenerator
 
 from pytools.persistent_dict import WriteOncePersistentDict
-from loopy.tools import LoopyKeyBuilder
+from loopy.tools import LoopyKeyBuilder, caches
 from loopy.version import DATA_MODEL_VERSION
 from loopy.types import LoopyType
 from loopy.typing import ExpressionT
@@ -315,6 +315,9 @@ code_gen_cache = WriteOncePersistentDict(
          key_builder=LoopyKeyBuilder())
 
 
+caches.append(code_gen_cache)
+
+
 class InKernelCallablesCollector(CombineMapper):
     """
     Returns an instance of :class:`frozenset` containing instances of
@@ -493,7 +496,7 @@ def diverge_callee_entrypoints(program):
 
         new_callables[name] = clbl
 
-    return program.copy(callables_table=new_callables)
+    return program.copy(callables_table=Map(new_callables))
 
 
 @dataclass(frozen=True)

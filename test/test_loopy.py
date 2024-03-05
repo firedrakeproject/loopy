@@ -1768,7 +1768,8 @@ def test_ilp_and_conditionals(ctx_factory):
     lp.auto_test_vs_ref(ref_knl, ctx, knl)
 
 
-def test_unr_and_conditionals(ctx_factory):
+@pytest.mark.parametrize("unr_tag", ["unr", "unr_hint"])
+def test_unr_and_conditionals(ctx_factory, unr_tag):
     ctx = ctx_factory()
 
     knl = lp.make_kernel("{[k]: 0<=k<n}}",
@@ -1786,7 +1787,7 @@ def test_unr_and_conditionals(ctx_factory):
 
     ref_knl = knl
 
-    knl = lp.split_iname(knl, "k", 2, inner_tag="unr")
+    knl = lp.split_iname(knl, "k", 2, inner_tag=unr_tag)
 
     lp.auto_test_vs_ref(ref_knl, ctx, knl)
 
@@ -3563,7 +3564,7 @@ def test_no_barrier_err_for_global_temps_with_base_storage(ctx_factory):
     np.testing.assert_allclose(2*np.arange(16) + 2, out)
 
 
-def test_dgemm_with_rectangular_tile_prefetch(ctx_factory):
+def test_dgemm_with_rectangular_tile_prefetch():
     # See <https://github.com/inducer/loopy/issues/724>
     t_unit = lp.make_kernel(
         "{[i,j,k]: 0<=i,j<72 and 0<=k<32}",
@@ -3607,6 +3608,64 @@ def test_dgemm_with_rectangular_tile_prefetch(ctx_factory):
 
     ctx = cl.create_some_context()
     lp.auto_test_vs_ref(ref_t_unit, ctx, t_unit)
+
+
+def test_modulo_vs_type_context(ctx_factory):
+    t_unit = lp.make_kernel(
+            "{[i]: 0 <= i < 10}",
+            """
+            # previously, the float 'type context' would propagate into
+            # the remainder, leading to 'i % 10.0' being generated, which
+            # C/OpenCL did not like.
+            <float64> a = i % 10
+            """)
+
+    ctx = cl.create_some_context()
+    queue = cl.CommandQueue(ctx)
+
+    t_unit(queue)
+
+
+def test_barrier_non_zero_hw_lbound():
+    t_unit = lp.make_kernel(
+        ["{[i]: 1<=i<17}",
+         "{[j]: 0<=j<16}"],
+        """
+        <> a[i] = i      {id=w_a}
+        <> b[j] = 2*a[j] {id=w_b}
+        """)
+
+    t_unit = lp.tag_inames(t_unit, {"i": "l.0", "j": "l.0"})
+
+    t_unit = lp.preprocess_kernel(t_unit)
+    knl = lp.get_one_linearized_kernel(t_unit.default_entrypoint,
+                                       t_unit.callables_table)
+
+    assert barrier_between(knl, "w_a", "w_b")
+
+
+def test_no_unnecessary_lbarrier(ctx_factory):
+    # This regression would fail on loopy.git <= 268a7f4
+    # (Issue reported by @thilinarmtb)
+
+    t_unit = lp.make_kernel(
+        "{[i_outer, i_inner]: 0 <= i_outer < n and 0 <= i_inner < 16}",
+        """
+        <> s_a[i_inner] = ai[i_outer * 16 + i_inner] {id=write_s_a}
+        ao[i_outer * 16 + i_inner] = 2.0 * s_a[i_inner] {id=write_ao, dep=write_s_a}
+        """,
+        assumptions="n>=0")
+
+    t_unit = lp.add_dtypes(t_unit, dict(ai=np.float32))
+    t_unit = lp.tag_inames(t_unit, dict(i_inner="l.0", i_outer="g.0"))
+    t_unit = lp.set_temporary_address_space(t_unit, "s_a", "local")
+    t_unit = lp.prioritize_loops(t_unit, "i_outer,i_inner")
+
+    t_unit = lp.preprocess_kernel(t_unit)
+    knl = lp.get_one_linearized_kernel(t_unit.default_entrypoint,
+                                       t_unit.callables_table)
+
+    assert not barrier_between(knl, "write_s_a", "write_ao")
 
 
 if __name__ == "__main__":

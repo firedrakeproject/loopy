@@ -28,6 +28,7 @@ from dataclasses import dataclass, replace
 from typing import (FrozenSet, Hashable, Sequence, AbstractSet, Any, Set, TypeVar,
                     Mapping, Dict, Tuple, Iterator, Optional, TYPE_CHECKING)
 
+from immutables import Map
 from pytools import ImmutableRecord
 import islpy as isl
 from loopy.diagnostic import LoopyError, ScheduleDebugInputError, warn_with_kernel
@@ -36,7 +37,7 @@ from pytools import MinRecursionLimit, ProcessLogger
 
 from pytools.persistent_dict import WriteOncePersistentDict
 from loopy.kernel.instruction import InstructionBase
-from loopy.tools import LoopyKeyBuilder
+from loopy.tools import LoopyKeyBuilder, caches
 from loopy.version import DATA_MODEL_VERSION
 
 if TYPE_CHECKING:
@@ -2202,6 +2203,9 @@ schedule_cache = WriteOncePersistentDict(
         key_builder=LoopyKeyBuilder())
 
 
+caches.append(schedule_cache)
+
+
 def _get_one_linearized_kernel_inner(kernel, callables_table):
     # This helper function exists to ensure that the generator chain is fully
     # out of scope after the function returns. This allows it to be
@@ -2275,7 +2279,7 @@ def linearize(t_unit):
         else:
             raise NotImplementedError(type(clbl))
 
-    return t_unit.copy(callables_table=new_callables)
+    return t_unit.copy(callables_table=Map(new_callables))
 
 
 # vim: foldmethod=marker

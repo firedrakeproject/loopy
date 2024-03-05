@@ -287,14 +287,12 @@ def set_up_hw_parallel_loops(codegen_state, schedule_index, next_func,
 
     result = []
 
-    bounds = kernel.get_iname_bounds(iname)
     domain = kernel.get_inames_domain(iname)
 
     # It's ok to find a bound that's too "loose". The conditional
     # generators will mop up after us.
-    from loopy.isl_helpers import static_min_of_pw_aff
-    lower_bound = static_min_of_pw_aff(bounds.lower_bound_pw_aff,
-            constants_only=False)
+    from loopy.kernel.tools import get_hw_axis_base_for_codegen
+    lower_bound = get_hw_axis_base_for_codegen(kernel, iname)
 
     # These bounds are 'implemented' by the hardware. Make sure
     # that the downstream conditional generators realize that.
@@ -345,7 +343,7 @@ def set_up_hw_parallel_loops(codegen_state, schedule_index, next_func,
 
 # {{{ sequential loop
 
-def generate_sequential_loop_dim_code(codegen_state, sched_index):
+def generate_sequential_loop_dim_code(codegen_state, sched_index, hints):
     kernel = codegen_state.kernel
 
     ecm = codegen_state.expression_to_code_mapper
@@ -479,7 +477,7 @@ def generate_sequential_loop_dim_code(codegen_state, sched_index):
                         codegen_state, loop_iname, kernel.index_dtype,
                         pw_aff_to_expr(simplify_pw_aff(lbound, kernel.assumptions)),
                         pw_aff_to_expr(simplify_pw_aff(ubound, kernel.assumptions)),
-                        inner_ast)))
+                        inner_ast, hints)))
 
     return merge_codegen_results(codegen_state, result)
 
