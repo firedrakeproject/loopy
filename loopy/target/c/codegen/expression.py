@@ -448,10 +448,10 @@ class ExpressionToCExpressionMapper(IdentityMapper):
 
             # FIXME: This assumes a 32-bit architecture.
             if isinstance(expr, np.float32):
-                return Literal(repr(expr)+"f")
+                return Literal(str(expr)+"f")
 
             elif isinstance(expr, np.float64):
-                return Literal(repr(expr))
+                return Literal(str(expr))
 
             # Disabled for now, possibly should be a subtarget.
             # elif isinstance(expr, np.float128):
@@ -464,7 +464,7 @@ class ExpressionToCExpressionMapper(IdentityMapper):
                     suffix += "u"
                 if iinfo.max > (2**31-1):
                     suffix += "l"
-                return Literal(repr(expr)+suffix)
+                return Literal(str(expr)+suffix)
             elif isinstance(expr, np.bool_):
                 return Literal("true") if expr else Literal("false")
             else:
@@ -473,9 +473,9 @@ class ExpressionToCExpressionMapper(IdentityMapper):
 
         elif np.isfinite(expr):
             if type_context == "f":
-                return Literal(repr(np.float32(expr))+"f")
+                return Literal(str(np.float32(expr))+"f")
             elif type_context == "d":
-                return Literal(repr(float(expr)))
+                return Literal(str(float(expr)))
             elif type_context in ["i", "b"]:
                 return int(expr)
             else:
