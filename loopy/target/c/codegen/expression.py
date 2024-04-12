@@ -633,7 +633,7 @@ class CExpressionToCodeMapper(RecursiveMapper):
     # }}}
 
     def map_constant(self, expr, prec):
-        return repr(expr)
+        return str(expr)
 
     def map_call(self, expr, enclosing_prec):
         from pymbolic.primitives import Variable
