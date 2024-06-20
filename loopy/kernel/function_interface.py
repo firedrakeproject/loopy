@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 __copyright__ = "Copyright (C) 2018 Andreas Kloeckner, Kaushik Kulkarni"
 
 __license__ = """
@@ -20,7 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from typing import ClassVar, Tuple
+from typing import ClassVar, FrozenSet, Tuple, TYPE_CHECKING
 
 from pytools import ImmutableRecord
 from loopy.diagnostic import LoopyError
@@ -31,12 +33,17 @@ from loopy.kernel.array import ArrayBase
 from loopy.kernel.data import ValueArg, ArrayArg
 from loopy.symbolic import DependencyMapper, WalkMapper
 
+if TYPE_CHECKING:
+    from loopy.translation_unit import CallablesTable, FunctionIdT
+
 __doc__ = """
 .. currentmodule:: loopy.kernel.function_interface
 
 .. autoclass:: ValueArgDescriptor
 
 .. autoclass:: ArrayArgDescriptor
+
+.. currentmodule:: loopy
 
 .. autoclass:: InKernelCallable
 
@@ -64,7 +71,7 @@ class ArrayArgDescriptor(ImmutableRecord):
     """
     Records information about an array argument to an in-kernel callable. To be
     passed to and returned from
-    :meth:`InKernelCallable.with_descrs`, used for
+    :meth:`~loopy.InKernelCallable.with_descrs`, used for
     matching shape and address space of caller and callee kernels.
 
     .. attribute:: shape
@@ -367,9 +374,10 @@ class InKernelCallable(ImmutableRecord):
     def with_descrs(self, arg_id_to_descr, clbl_inf_ctx):
         """
         :arg arg_id_to_descr: a mapping from argument identifiers (integers for
-            positional arguments) to instances of :class:`ArrayArgDescriptor`
-            or :class:`ValueArgDescriptor`. Unspecified/unknown descriptors are
-            not represented in *arg_id_to_type*.
+            positional arguments) to instances of
+            :class:`~loopy.kernel.function_interface.ArrayArgDescriptor`
+            or :class:`~loopy.kernel.function_interface.ValueArgDescriptor`.
+            Unspecified/unknown descriptors are not represented in *arg_id_to_type*.
 
             Return values are denoted by negative integers, with the first
             returned value identified as *-1*.
@@ -453,7 +461,11 @@ class InKernelCallable(ImmutableRecord):
         """
         raise NotImplementedError()
 
-    def get_called_callables(self, callables_table, recursive=True):
+    def get_called_callables(
+                             self,
+                             callables_table: CallablesTable,
+                             recursive: bool = True
+                         ) -> FrozenSet[FunctionIdT]:
         """
         Returns a :class:`frozenset` of callable ids called by *self* that are
         resolved via *callables_table*.

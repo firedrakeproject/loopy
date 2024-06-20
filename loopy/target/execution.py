@@ -21,7 +21,7 @@ THE SOFTWARE.
 """
 
 
-from typing import (Callable, Tuple, Union, Set, FrozenSet, List, Dict,
+from typing import (Callable, Mapping, Tuple, Union, Set, FrozenSet, List, Dict,
         Optional, Sequence, Any)
 from dataclasses import dataclass
 
@@ -721,17 +721,25 @@ class ExecutionWrapperGeneratorBase(ABC):
 # }}}
 
 
-typed_and_scheduled_cache = WriteOncePersistentDict(
+typed_and_scheduled_cache: WriteOncePersistentDict[
+    Tuple[str, TranslationUnit, Optional[Mapping[str, LoopyType]]],
+    TranslationUnit
+] = WriteOncePersistentDict(
         "loopy-typed-and-scheduled-cache-v1-"+DATA_MODEL_VERSION,
-        key_builder=LoopyKeyBuilder())
+        key_builder=LoopyKeyBuilder(),
+        safe_sync=False)
 
 
 caches.append(typed_and_scheduled_cache)
 
 
-invoker_cache = WriteOncePersistentDict(
+invoker_cache: WriteOncePersistentDict[
+    Tuple[str, TranslationUnit, str],
+    str
+] = WriteOncePersistentDict(
         "loopy-invoker-cache-v10-"+DATA_MODEL_VERSION,
-        key_builder=LoopyKeyBuilder())
+        key_builder=LoopyKeyBuilder(),
+        safe_sync=False)
 
 
 caches.append(invoker_cache)
@@ -848,12 +856,12 @@ class ExecutorBase:
         logger.debug("%s: typed-and-scheduled cache miss" %
                 self.t_unit.entrypoints)
 
-        kernel = self.get_typed_and_scheduled_translation_unit_uncached(arg_to_dtype)
+        t_unit = self.get_typed_and_scheduled_translation_unit_uncached(arg_to_dtype)
 
         if CACHING_ENABLED:
-            typed_and_scheduled_cache.store_if_not_present(cache_key, kernel)
+            typed_and_scheduled_cache.store_if_not_present(cache_key, t_unit)
 
-        return kernel
+        return t_unit
 
     def arg_to_dtype(self, kwargs) -> Optional[Map[str, LoopyType]]:
         if not self.has_runtime_typed_args:
