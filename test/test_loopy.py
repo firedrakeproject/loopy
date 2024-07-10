@@ -20,16 +20,20 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+import logging
 import sys
+
 import numpy as np
-import loopy as lp
+import pytest
+
 import pyopencl as cl
 import pyopencl.array  # noqa
 import pyopencl.clmath  # noqa
 import pyopencl.clrandom  # noqa
-import pytest
 
-import logging
+import loopy as lp
+
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -39,13 +43,13 @@ except ImportError:
 else:
     faulthandler.enable()
 
-from pyopencl.tools import pytest_generate_tests_for_pyopencl \
-        as pytest_generate_tests
+from pyopencl.tools import pytest_generate_tests_for_pyopencl as pytest_generate_tests
+
 
 __all__ = [
-        "pytest_generate_tests",
-        "cl"  # "cl.create_some_context"
-        ]
+    "cl",  # "cl.create_some_context"
+    "pytest_generate_tests"
+]
 
 
 from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa
@@ -79,7 +83,7 @@ def test_globals_decl_once_with_multi_subprogram(ctx_factory):
 
 
 def test_complicated_subst(ctx_factory):
-    #ctx = ctx_factory()
+    # ctx = ctx_factory()
 
     knl = lp.make_kernel(
             "{[i]: 0<=i<n}",
@@ -266,8 +270,9 @@ def test_ilp_write_race_detection_global():
     knl = lp.preprocess_kernel(knl)
 
     with lp.CacheMode(False):
-        from loopy.diagnostic import WriteRaceConditionWarning
         from warnings import catch_warnings
+
+        from loopy.diagnostic import WriteRaceConditionWarning
         from loopy.schedule import linearize
         with catch_warnings(record=True) as warn_list:
             linearize(knl)
@@ -607,7 +612,7 @@ def test_vector_types(ctx_factory, vec_len):
 
 
 def test_conditional(ctx_factory):
-    #logging.basicConfig(level=logging.DEBUG)
+    # logging.basicConfig(level=logging.DEBUG)
     ctx = ctx_factory()
 
     knl = lp.make_kernel(
@@ -876,12 +881,6 @@ def test_atomic(ctx_factory, dtype):
             and "cl_khr_int64_base_atomics" not in ctx.devices[0].extensions):
         pytest.skip("64-bit atomics not supported on device")
 
-    import pyopencl.version  # noqa
-    if (
-            cl.version.VERSION < (2015, 2)
-            and dtype == np.int64):
-        pytest.skip("int64 RNG not supported in PyOpenCL < 2015.2")
-
     knl = lp.make_kernel(
             "{ [i]: 0<=i<n }",
             "out[i%20] = out[i%20] + 2*a[i] {atomic}",
@@ -903,7 +902,9 @@ def test_atomic_load(ctx_factory, dtype):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
-    dtype = np.float64
+    if ctx.devices[0].platform.vendor == "The pocl project":
+        pytest.skip("https://github.com/pocl/pocl/issues/1509")
+
     n = 10
 
     knl = lp.make_kernel(
@@ -1342,6 +1343,9 @@ def test_save_with_base_storage(ctx_factory, debug=False):
     knl = lp.alias_temporaries(knl, ["a", "b"],
             synchronize_for_exclusive_use=False)
 
+    knl = lp.preprocess_kernel(knl)
+    knl = lp.allocate_temporaries_for_base_storage(knl)
+
     save_and_reload_temporaries_test(queue, knl, np.arange(10), debug)
 
 
@@ -1416,6 +1420,8 @@ def test_missing_definition_check_respects_aliases():
          target=lp.CTarget(),
          silenced_warnings=frozenset(["read_no_write(b)"]))
 
+    knl = lp.preprocess_kernel(knl)
+    knl = lp.allocate_temporaries_for_base_storage(knl)
     lp.generate_code_v2(knl)
 
 
@@ -1445,7 +1451,7 @@ def test_global_temporary(ctx_factory):
     assert len(cgr.device_programs) == 2
 
     print(cgr.device_code())
-    #print(cgr.host_code())
+    # print(cgr.host_code())
 
     lp.auto_test_vs_ref(ref_knl, ctx, knl, parameters=dict(n=5))
 
@@ -1877,18 +1883,18 @@ def test_header_extract():
 
     knl = lp.fix_parameters(knl, n=200)
 
-    #test C
+    # test C
     cknl = knl.copy(target=lp.CTarget())
     assert str(lp.generate_header(cknl)[0]) == (
             "void loopy_kernel(float *__restrict__ T);")
 
-    #test CUDA
+    # test CUDA
     cuknl = knl.copy(target=lp.CudaTarget())
     assert str(lp.generate_header(cuknl)[0]) == (
             'extern "C" __global__ void __launch_bounds__(1) '
             "loopy_kernel(float *__restrict__ T);")
 
-    #test OpenCL
+    # test OpenCL
     oclknl = knl.copy(target=lp.PyOpenCLTarget())
     assert str(lp.generate_header(oclknl)[0]) == (
             "__kernel void __attribute__ ((reqd_work_group_size(1, 1, 1))) "
@@ -1911,6 +1917,8 @@ def test_scalars_with_base_storage(ctx_factory):
                                   shape=(), base_storage="base"),
                 ])
 
+    knl = lp.preprocess_kernel(knl)
+    knl = lp.allocate_temporaries_for_base_storage(knl)
     knl(queue, out_host=True)
 
 
@@ -2050,7 +2058,7 @@ def test_tight_loop_bounds_codegen():
     knl = lp.split_iname(knl, "i", 5, inner_tag="l.0", outer_tag="g.0")
 
     cgr = lp.generate_code_v2(knl)
-    #print(cgr.device_code())
+    # print(cgr.device_code())
 
     for_loop = \
         "for (int j = " \
@@ -2190,8 +2198,14 @@ def test_nosync_option_parsing():
 
 
 def barrier_between(knl, id1, id2, ignore_barriers_in_levels=()):
-    from loopy.schedule import (RunInstruction, Barrier, EnterLoop, LeaveLoop,
-            CallKernel, ReturnFromKernel)
+    from loopy.schedule import (
+        Barrier,
+        CallKernel,
+        EnterLoop,
+        LeaveLoop,
+        ReturnFromKernel,
+        RunInstruction,
+    )
     watch_for_barrier = False
     seen_barrier = False
     loop_level = 0
@@ -2302,8 +2316,8 @@ def test_barrier_in_overridden_get_grid_size_expanded_kernel():
 
 
 def test_multi_argument_reduction_type_inference():
-    from loopy.type_inference import TypeReader
     from loopy.library.reduction import SegmentedSumReductionOperation
+    from loopy.type_inference import TypeReader
     from loopy.types import to_loopy_type
     op = SegmentedSumReductionOperation()
 
@@ -2330,7 +2344,7 @@ def test_multi_argument_reduction_type_inference():
 
 
 def test_multi_argument_reduction_parsing():
-    from loopy.symbolic import parse, Reduction
+    from loopy.symbolic import Reduction, parse
 
     assert isinstance(
             parse("reduce(argmax, i, reduce(argmax, j, i, j))").expr,
@@ -3199,6 +3213,9 @@ def test_global_tv_with_base_storage_across_gbarrier(ctx_factory):
 
     t_unit = lp.tag_inames(t_unit, {"i": "g.0", "j": "g.0"})
 
+    t_unit = lp.preprocess_kernel(t_unit)
+    t_unit = lp.allocate_temporaries_for_base_storage(t_unit)
+
     _, (out,) = t_unit(cq)
     np.testing.assert_allclose(out.get(), np.arange(9, -1, -1))
 
@@ -3299,9 +3316,10 @@ def test_redn_in_predicate(ctx_factory):
 
 
 def test_obj_tagged_is_persistent_hashable():
-    from loopy.tools import LoopyKeyBuilder
-    from pytools.tag import tag_dataclass, Tag
+    from pytools.tag import Tag, tag_dataclass
+
     from loopy.match import ObjTagged
+    from loopy.tools import LoopyKeyBuilder
 
     lkb = LoopyKeyBuilder()
 
@@ -3558,6 +3576,9 @@ def test_no_barrier_err_for_global_temps_with_base_storage(ctx_factory):
     )
     knl = lp.split_iname(knl, "i", 4, inner_tag="l.0", outer_tag="g.0")
     knl = lp.split_iname(knl, "j", 4, inner_tag="l.0", outer_tag="g.0")
+
+    knl = lp.preprocess_kernel(knl)
+    knl = lp.allocate_temporaries_for_base_storage(knl)
 
     _, (out,) = knl(cq, out_host=True)
 

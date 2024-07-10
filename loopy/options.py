@@ -21,10 +21,11 @@ THE SOFTWARE.
 """
 
 
-from pytools import ImmutableRecord
-import re
 import os
+import re
 from warnings import warn
+
+from pytools import ImmutableRecord
 
 
 ALLOW_TERMINAL_COLORS = True
@@ -47,7 +48,7 @@ def _apply_legacy_map(lmap, kwargs):
             if lmap_value is None:
                 # ignore this
                 warn("option '%s' is deprecated and was ignored" % name,
-                        DeprecationWarning)
+                        DeprecationWarning, stacklevel=1)
                 continue
 
             new_name, translator = lmap_value
@@ -57,7 +58,7 @@ def _apply_legacy_map(lmap, kwargs):
 
             warn(f"Loopy option '{name}' is deprecated. '{new_name}' should be "
                     "used instead. The old option will stop working in 2022.",
-                    DeprecationWarning)
+                    DeprecationWarning, stacklevel=1)
             if translator is not None:
                 val = translator(val)
 

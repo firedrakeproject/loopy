@@ -20,25 +20,33 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from loopy.symbolic import CombineMapper
+import logging
+
 import numpy as np
 
-from loopy.tools import is_integer
-from loopy.types import NumpyType
+from pymbolic.primitives import Lookup, Subscript, Variable
 
 from loopy.diagnostic import (
-        LoopyError,
-        TypeInferenceFailure, DependencyTypeInferenceFailure)
+    DependencyTypeInferenceFailure,
+    LoopyError,
+    TypeInferenceFailure,
+)
 from loopy.kernel.instruction import _DataObliviousInstruction
-
 from loopy.symbolic import (
-        LinearSubscript, parse_tagged_name, RuleAwareIdentityMapper,
-        SubstitutionRuleExpander, ResolvedFunction,
-        SubstitutionRuleMappingContext, SubArrayRef)
-from pymbolic.primitives import Variable, Subscript, Lookup
+    CombineMapper,
+    LinearSubscript,
+    ResolvedFunction,
+    RuleAwareIdentityMapper,
+    SubArrayRef,
+    SubstitutionRuleExpander,
+    SubstitutionRuleMappingContext,
+    parse_tagged_name,
+)
+from loopy.tools import is_integer
 from loopy.translation_unit import CallablesInferenceContext, make_clbl_inf_ctx
+from loopy.types import NumpyType
 
-import logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -482,8 +490,8 @@ class TypeInferenceMapper(CombineMapper):
             raise TypeInferenceFailure("name not known in type inference: %s"
                     % expr.name)
 
-        from loopy.kernel.data import TemporaryVariable, KernelArgument
         import loopy as lp
+        from loopy.kernel.data import KernelArgument, TemporaryVariable
         if isinstance(obj, (KernelArgument, TemporaryVariable)):
             assert obj.dtype is not lp.auto
             result = [obj.dtype]
@@ -516,28 +524,26 @@ class TypeInferenceMapper(CombineMapper):
         except KeyError:
             raise LoopyError("cannot look up attribute '%s' in "
                     "aggregate expression '%s' of dtype '%s'"
-                    % (expr.aggregate, expr.name, numpy_dtype))
+                    % (expr.aggregate, expr.name, numpy_dtype)) from None
 
         dtype = field[0]
         return [NumpyType(dtype)]
 
     def map_comparison(self, expr):
-        # "bool" is unusable because OpenCL's bool has indeterminate memory
-        # format.
         self(expr.left, return_tuple=False, return_dtype_set=False)
         self(expr.right, return_tuple=False, return_dtype_set=False)
-        return [NumpyType(np.dtype(np.int32))]
+        return [NumpyType(np.dtype(np.bool_))]
 
     def map_logical_not(self, expr):
         self.rec(expr.child)
 
-        return [NumpyType(np.dtype(np.int32))]
+        return [NumpyType(np.dtype(np.bool_))]
 
     def map_logical_and(self, expr):
         for child in expr.children:
             self.rec(child)
 
-        return [NumpyType(np.dtype(np.int32))]
+        return [NumpyType(np.dtype(np.bool_))]
 
     map_logical_or = map_logical_and
 
@@ -552,8 +558,9 @@ class TypeInferenceMapper(CombineMapper):
         :arg return_tuple: If *True*, treat the reduction as having tuple type.
         Otherwise, if *False*, the reduction must have scalar type.
         """
-        from loopy.symbolic import Reduction
         from pymbolic.primitives import Call
+
+        from loopy.symbolic import Reduction
 
         if not return_tuple and expr.is_tuple_typed:
             raise LoopyError("reductions with more or fewer than one "
@@ -667,8 +674,8 @@ class TypeReader(TypeInferenceMapper):
             raise TypeInferenceFailure("name not known in type inference: %s"
                     % expr.name)
 
-        from loopy.kernel.data import TemporaryVariable, KernelArgument
         import loopy as lp
+        from loopy.kernel.data import KernelArgument, TemporaryVariable
         if isinstance(obj, (KernelArgument, TemporaryVariable)):
             assert obj.dtype is not lp.auto
             result = [obj.dtype]
@@ -845,7 +852,7 @@ def infer_unknown_types_for_a_single_kernel(kernel, clbl_inf_ctx):
 
     # {{{ work on type inference queue
 
-    from loopy.kernel.data import TemporaryVariable, KernelArgument
+    from loopy.kernel.data import KernelArgument, TemporaryVariable
 
     old_calls_to_new_calls = {}
     touched_variable_names = set()
@@ -1097,7 +1104,7 @@ def infer_arg_and_reduction_dtypes_for_reduction_expression(
                 arg_dtypes = [None]
             else:
                 raise LoopyError("failed to determine type of accumulator for "
-                        "reduction '%s'" % expr)
+                        "reduction '%s'" % expr) from None
 
     reduction_dtypes = expr.operation.result_dtypes(*arg_dtypes)
 

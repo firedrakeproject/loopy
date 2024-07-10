@@ -20,18 +20,18 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from sys import intern
+from collections.abc import Set as abc_Set
 from functools import cached_property
+from sys import intern
 from typing import FrozenSet
-
 from warnings import warn
+
 import islpy as isl
 from pytools import ImmutableRecord, memoize_method
-from pytools.tag import Tag, tag_dataclass, Taggable
+from pytools.tag import Tag, Taggable, tag_dataclass
 
 from loopy.diagnostic import LoopyError
 from loopy.tools import Optional
-from collections.abc import Set as abc_Set
 
 
 # {{{ instruction tags
@@ -229,14 +229,8 @@ class InstructionBase(ImmutableRecord, Taggable):
         new_predicates = set()
         for pred in predicates:
             if isinstance(pred, str):
-                from pymbolic.primitives import LogicalNot
                 from loopy.symbolic import parse
-                if pred.startswith("!"):
-                    warn("predicates starting with '!' are deprecated. "
-                            "Simply use 'not' instead")
-                    pred = LogicalNot(parse(pred[1:]))
-                else:
-                    pred = parse(pred)
+                pred = parse(pred)
 
             new_predicates.add(pred)
 
@@ -475,7 +469,8 @@ class InstructionBase(ImmutableRecord, Taggable):
 
 
 def _get_assignee_var_name(expr):
-    from pymbolic.primitives import Variable, Subscript, Lookup
+    from pymbolic.primitives import Lookup, Subscript, Variable
+
     from loopy.symbolic import LinearSubscript, SubArrayRef
 
     if isinstance(expr, Lookup):
@@ -507,8 +502,9 @@ def _get_assignee_var_name(expr):
 
 
 def _get_assignee_subscript_deps(expr):
-    from pymbolic.primitives import Variable, Subscript, Lookup
-    from loopy.symbolic import LinearSubscript, get_dependencies, SubArrayRef
+    from pymbolic.primitives import Lookup, Subscript, Variable
+
+    from loopy.symbolic import LinearSubscript, SubArrayRef, get_dependencies
 
     if isinstance(expr, Lookup):
         expr = expr.aggregate
@@ -836,7 +832,8 @@ class Assignment(MultiAssignmentBase):
         if isinstance(expression, str):
             expression = parse(expression)
 
-        from pymbolic.primitives import Variable, Subscript, Lookup
+        from pymbolic.primitives import Lookup, Subscript, Variable
+
         from loopy.symbolic import LinearSubscript
         if not isinstance(assignee, (Variable, Subscript, LinearSubscript, Lookup)):
             raise LoopyError("invalid lvalue '%s'" % assignee)
@@ -976,6 +973,7 @@ class CallInstruction(MultiAssignmentBase):
                 tags=tags)
 
         from pymbolic.primitives import Call
+
         from loopy.symbolic import Reduction
         if not isinstance(expression, (Call, Reduction)) and (
                 expression is not None):
@@ -993,7 +991,8 @@ class CallInstruction(MultiAssignmentBase):
         if isinstance(expression, str):
             expression = parse(expression)
 
-        from pymbolic.primitives import Variable, Subscript
+        from pymbolic.primitives import Subscript, Variable
+
         from loopy.symbolic import LinearSubscript, SubArrayRef
         for assignee in assignees:
             if not isinstance(assignee, (Variable, Subscript, LinearSubscript,
@@ -1092,7 +1091,7 @@ def subscript_contains_slice(subscript):
     """Return *True* if the *subscript* contains an instance of
     :class:`pymbolic.primitives.Slice` as of its indices.
     """
-    from pymbolic.primitives import Subscript, Slice
+    from pymbolic.primitives import Slice, Subscript
     assert isinstance(subscript, Subscript)
     return any(isinstance(index, Slice) for index in subscript.index_tuple)
 
@@ -1106,6 +1105,7 @@ def is_array_call(assignees, expression):
     :meth:`is_array_call` will return *True*.
     """
     from pymbolic.primitives import Call, Subscript
+
     from loopy.symbolic import SubArrayRef
 
     if not isinstance(expression, Call):
@@ -1127,6 +1127,7 @@ def modify_assignee_for_array_call(assignee):
     Converts the assignee subscript or variable as a SubArrayRef.
     """
     from pymbolic.primitives import Subscript, Variable
+
     from loopy.symbolic import SubArrayRef
     if isinstance(assignee, SubArrayRef):
         return assignee
@@ -1156,6 +1157,7 @@ def make_assignment(assignees, expression, temp_var_types=None, **kwargs):
                     "left-hand side not supported")
 
         from pymbolic.primitives import Call
+
         from loopy.symbolic import Reduction
         if not isinstance(expression, (Call, Reduction)):
             raise LoopyError("right-hand side in multiple assignment must be "
@@ -1180,8 +1182,9 @@ def make_assignment(assignees, expression, temp_var_types=None, **kwargs):
                     **kwargs)
     else:
         def _is_array(expr):
+            from pymbolic.primitives import Slice, Subscript
+
             from loopy.symbolic import SubArrayRef
-            from pymbolic.primitives import (Subscript, Slice)
             if isinstance(expr, SubArrayRef):
                 return True
             if isinstance(expr, Subscript):

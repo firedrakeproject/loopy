@@ -21,23 +21,24 @@ THE SOFTWARE.
 """
 
 
-from typing import Sequence, Tuple, Union, Callable, Any, Optional, TYPE_CHECKING
+import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from immutables import Map
 
 from pytools import memoize_method
-from pytools.codegen import Indentation, CodeGenerator
+from pytools.codegen import CodeGenerator, Indentation
 
-from loopy.types import LoopyType
-from loopy.typing import ExpressionT
 from loopy.kernel import LoopKernel
 from loopy.kernel.data import ArrayArg
 from loopy.schedule.tools import KernelArgInfo
-from loopy.target.execution import (
-    ExecutorBase, ExecutionWrapperGeneratorBase)
-import logging
+from loopy.target.execution import ExecutionWrapperGeneratorBase, ExecutorBase
+from loopy.types import LoopyType
+from loopy.typing import ExpressionT
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -313,7 +314,7 @@ class PyOpenCLExecutor(ExecutorBase):
         dev_code = codegen_result.device_code()
 
         if t_unit[self.entrypoint].options.write_code:
-            #FIXME: redirect to "translation unit" level option as well.
+            # FIXME: redirect to "translation unit" level option as well.
             output = dev_code
             if self.t_unit[self.entrypoint].options.allow_terminal_colors:
                 output = get_highlighted_code(output)
@@ -327,13 +328,13 @@ class PyOpenCLExecutor(ExecutorBase):
                     outf.write(output)
 
         if t_unit[self.entrypoint].options.edit_code:
-            #FIXME: redirect to "translation unit" level option as well.
+            # FIXME: redirect to "translation unit" level option as well.
             from pytools import invoke_editor
             dev_code = invoke_editor(dev_code, "code.cl")
 
         import pyopencl as cl
 
-        #FIXME: redirect to "translation unit" level option as well.
+        # FIXME: redirect to "translation unit" level option as well.
         cl_program = (
                 cl.Program(self.context, dev_code)
                 .build(options=t_unit[self.entrypoint].options.build_options))
