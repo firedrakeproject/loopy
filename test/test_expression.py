@@ -20,18 +20,20 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+import logging
 import sys
+
 import numpy as np
-import loopy as lp
+import pytest
+
 import pyopencl as cl
 import pyopencl.clmath  # noqa
 import pyopencl.clrandom  # noqa
-import pytest
-
 from pymbolic.mapper.evaluator import EvaluationMapper
 
+import loopy as lp
 
-import logging
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -41,13 +43,13 @@ except ImportError:
 else:
     faulthandler.enable()
 
-from pyopencl.tools import pytest_generate_tests_for_pyopencl \
-        as pytest_generate_tests
+from pyopencl.tools import pytest_generate_tests_for_pyopencl as pytest_generate_tests
+
 
 __all__ = [
-        "pytest_generate_tests",
-        "cl"  # "cl.create_some_context"
-        ]
+    "cl",  # "cl.create_some_context"
+    "pytest_generate_tests"
+]
 
 
 from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa
@@ -97,6 +99,7 @@ def make_random_fp_value(use_complex):
 
 def make_random_fp_expression(prefix, var_values, size, use_complex):
     from random import randrange
+
     import pymbolic.primitives as p
     v = randrange(1500)
     size[0] += 1
@@ -146,6 +149,7 @@ def make_random_int_value(nonneg):
 
 def make_random_int_expression(prefix, var_values, size, nonneg):
     from random import randrange
+
     import pymbolic.primitives as p
     if size[0] < 10:
         v = randrange(800)
@@ -291,7 +295,7 @@ def test_fuzz_expression_code_gen(ctx_factory, expr_type, random_seed, target_cl
         var_name = "expr%d" % i
 
         # print(expr)
-        #assert_parse_roundtrip(expr)
+        # assert_parse_roundtrip(expr)
 
         if expr_type in ["int", "int_nonneg"]:
             result_type_iinfo = np.iinfo(np.int32)
@@ -343,7 +347,8 @@ def test_fuzz_expression_code_gen(ctx_factory, expr_type, random_seed, target_cl
             from warnings import warn
             warn("Using default C compiler because gcc-10 was not found. "
                  "These tests may take a long time, because of "
-                 "https://gcc.gnu.org/bugzilla/show_bug.cgi?id=107127.")
+                 "https://gcc.gnu.org/bugzilla/show_bug.cgi?id=107127.",
+                 stacklevel=1)
             target = target_cls()
 
     else:
@@ -391,7 +396,7 @@ def test_fuzz_expression_code_gen(ctx_factory, expr_type, random_seed, target_cl
             print("reference=%r" % ref_value)
             print("loopy=%r" % lp_value)
             print(80*"-")
-            1/0
+            1/0  # noqa: B018
 
     print(lp.generate_code_v2(knl).device_code())
 
@@ -450,13 +455,14 @@ def test_indexof_vec(ctx_factory):
     knl = lp.set_options(knl, write_code=True)
 
     (evt, (out,)) = knl(queue)
-    #out = out.get()
-    #assert np.array_equal(out.ravel(order="C"), np.arange(25))
+    # out = out.get()
+    # assert np.array_equal(out.ravel(order="C"), np.arange(25))
 
 
 def test_is_expression_equal():
-    from loopy.symbolic import is_expression_equal
     from pymbolic import var
+
+    from loopy.symbolic import is_expression_equal
 
     x = var("x")
     y = var("y")
@@ -557,8 +563,9 @@ def test_complex_support(ctx_factory, target):
 
     kwargs = {"in1": in1, "in2": in2}
 
+    knl = lp.set_options(knl, write_code=True)
+
     if target == lp.PyOpenCLTarget:
-        knl = lp.set_options(knl, write_code=True)
         cl_ctx = ctx_factory()
         with cl.CommandQueue(cl_ctx) as queue:
             evt, out = knl(queue, **kwargs)
@@ -622,6 +629,7 @@ def test_bool_type_context(ctx_factory):
 
 def test_np_bool_handling(ctx_factory):
     import pymbolic.primitives as p
+
     from loopy.symbolic import parse
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)

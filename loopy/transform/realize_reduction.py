@@ -24,31 +24,28 @@ THE SOFTWARE.
 """
 
 
-from dataclasses import dataclass, replace
-from typing import (Tuple, Dict, Callable, List, Optional, Set, Sequence,
-        FrozenSet)
-
 import logging
-logger = logging.getLogger(__name__)
+from dataclasses import dataclass, replace
+from typing import Callable, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
-from pytools import memoize_on_first_arg
-from pytools.tag import Tag
-import islpy as isl
-from pymbolic.primitives import Expression
+
+logger = logging.getLogger(__name__)
 
 from immutables import Map
 
-from loopy.kernel.data import make_assignment
-from loopy.symbolic import ReductionCallbackMapper
-from loopy.translation_unit import ConcreteCallablesTable, TranslationUnit
-from loopy.kernel.function_interface import CallableKernel
-from loopy.kernel.data import TemporaryVariable, AddressSpace
-from loopy.kernel.instruction import (
-        InstructionBase, MultiAssignmentBase, Assignment)
+import islpy as isl
+from pymbolic.primitives import Expression
+from pytools import memoize_on_first_arg
+from pytools.tag import Tag
+
+from loopy.diagnostic import LoopyError, ReductionIsNotTriangularError, warn_with_kernel
 from loopy.kernel import LoopKernel
-from loopy.diagnostic import (
-        LoopyError, warn_with_kernel, ReductionIsNotTriangularError)
+from loopy.kernel.data import AddressSpace, TemporaryVariable, make_assignment
+from loopy.kernel.function_interface import CallableKernel
+from loopy.kernel.instruction import Assignment, InstructionBase, MultiAssignmentBase
+from loopy.symbolic import ReductionCallbackMapper
 from loopy.transform.instruction import replace_instruction_ids_in_insn
+from loopy.translation_unit import ConcreteCallablesTable, TranslationUnit
 
 
 # {{{ reduction realization context
@@ -185,8 +182,12 @@ def _classify_reduction_inames(red_realize_ctx, inames):
     nonlocal_par = []
 
     from loopy.kernel.data import (
-            LocalInameTagBase, UnrolledIlpTag, UnrollTag,
-            ConcurrentTag, filter_iname_tags_by_type)
+        ConcurrentTag,
+        LocalInameTagBase,
+        UnrolledIlpTag,
+        UnrollTag,
+        filter_iname_tags_by_type,
+    )
 
     for iname in inames:
         try:
@@ -377,7 +378,7 @@ def _try_infer_scan_candidate_from_expr(
         except ValueError as v:
             raise ValueError(
                     "Couldn't determine a sweep iname for the scan "
-                    "expression '%s': %s" % (expr, v))
+                    "expression '%s': %s" % (expr, v)) from None
 
     try:
         sweep_lower_bound, sweep_upper_bound, scan_lower_bound = (
@@ -387,7 +388,7 @@ def _try_infer_scan_candidate_from_expr(
         raise ValueError(
                 "Couldn't determine bounds for the scan with expression '%s' "
                 "(sweep iname: '%s', scan iname: '%s'): %s"
-                % (expr, sweep_iname, scan_iname, v))
+                % (expr, sweep_iname, scan_iname, v)) from None
 
     try:
         stride = _try_infer_scan_stride(
@@ -396,7 +397,7 @@ def _try_infer_scan_candidate_from_expr(
         raise ValueError(
                 "Couldn't determine a scan stride for the scan with expression '%s' "
                 "(sweep iname: '%s', scan iname: '%s'): %s"
-                % (expr, sweep_iname, scan_iname, v))
+                % (expr, sweep_iname, scan_iname, v)) from None
 
     return _ScanCandidateParameters(
             sweep_iname=sweep_iname,
@@ -473,7 +474,7 @@ def _try_infer_scan_and_sweep_bounds(kernel, scan_iname, sweep_iname, within_ina
         sweep_upper_bound = domain.dim_max(sweep_idx)
         scan_lower_bound = domain.dim_min(scan_idx)
     except isl.Error as e:
-        raise ValueError("isl error: %s" % e)
+        raise ValueError("isl error: %s" % e) from e
 
     return (sweep_lower_bound, sweep_upper_bound, scan_lower_bound)
 
@@ -503,7 +504,7 @@ def _try_infer_scan_stride(kernel, scan_iname, sweep_iname, sweep_lower_bound):
                 - domain_with_sweep_param.dim_min(scan_iname_idx)
                 ).gist(domain_with_sweep_param.params())
     except isl.Error as e:
-        raise ValueError("isl error: '%s'" % e)
+        raise ValueError("isl error: '%s'" % e) from e
 
     scan_iname_pieces = scan_iname_range.get_pieces()
 
@@ -525,8 +526,9 @@ def _try_infer_scan_stride(kernel, scan_iname, sweep_iname, sweep_lower_bound):
     if len(coeffs) == 0:
         try:
             scan_iname_aff.get_constant_val()
-        except Exception:
-            raise ValueError("range for aff isn't constant: '%s'" % scan_iname_aff)
+        except Exception as err:
+            raise ValueError(
+                        "range for aff isn't constant: '%s'" % scan_iname_aff) from err
 
         # If this point is reached we're assuming the domain is of the form
         # {[i,j]: i=0 and j=0}, so the stride is technically 1 - any value
@@ -922,6 +924,7 @@ def expand_inner_reduction(
         red_realize_ctx, id, expr, nresults, depends_on, within_inames, predicates):
     # FIXME: use _make_temporaries
     from pymbolic.primitives import Call
+
     from loopy.symbolic import Reduction
     assert isinstance(expr, (Call, Reduction))
 
@@ -1337,7 +1340,9 @@ def replace_var_within_expr(kernel, var_name_gen, expr, from_var, to_var):
     from pymbolic.mapper.substitutor import make_subst_func
 
     from loopy.symbolic import (
-        SubstitutionRuleMappingContext, RuleAwareSubstitutionMapper)
+        RuleAwareSubstitutionMapper,
+        SubstitutionRuleMappingContext,
+    )
 
     # FIXME: This is broken. SubstitutionRuleMappingContext produces a new
     # kernel (via finish_kernel) with new subst rules. These get dropped on the
@@ -1754,7 +1759,8 @@ def map_reduction(expr, *, red_realize_ctx, nresults):
             domains=red_realize_ctx.domains)
 
     from loopy.type_inference import (
-            infer_arg_and_reduction_dtypes_for_reduction_expression)
+        infer_arg_and_reduction_dtypes_for_reduction_expression,
+    )
     arg_dtypes, reduction_dtypes = (
             infer_arg_and_reduction_dtypes_for_reduction_expression(
                 kernel_with_updated_domains, expr,
@@ -2067,7 +2073,9 @@ def realize_reduction_for_single_kernel(kernel, callables_table,
             # extra work compared to not checking.
 
             from loopy.kernel.tools import (
-                    kernel_has_global_barriers, find_most_recent_global_barrier)
+                find_most_recent_global_barrier,
+                kernel_has_global_barriers,
+            )
 
             if kernel_has_global_barriers(orig_kernel):
                 global_barrier = find_most_recent_global_barrier(kernel, insn.id)

@@ -24,51 +24,47 @@ THE SOFTWARE.
 """
 
 
-from typing import AbstractSet, ClassVar, Mapping, Sequence, Tuple
-from functools import reduce, cached_property
-from sys import intern
 import re
+from functools import cached_property, reduce
+from sys import intern
+from typing import AbstractSet, ClassVar, Mapping, Sequence, Tuple
 
+import immutables
 import numpy as np
 
-from pytools import (memoize, memoize_method, memoize_on_first_arg,
-        ImmutableRecord)
-import pytools.lex
-from pytools.tag import Taggable
 import islpy as isl
-from islpy import dim_type
-
 import pymbolic.primitives as p
-
+import pytools.lex
+from islpy import dim_type
 from pymbolic.mapper import (
-        CachedCombineMapper as CombineMapperBase,
-        CachedIdentityMapper as IdentityMapperBase,
-        IdentityMapper as UncachedIdentityMapperBase,
-        CachedWalkMapper as WalkMapperBase,
-        WalkMapper as UncachedWalkMapperBase,
-        CallbackMapper as CallbackMapperBase,
-        CSECachingMapperMixin,
-        )
-import immutables
-from pymbolic.mapper.evaluator import \
-        CachedEvaluationMapper as EvaluationMapperBase
-from pymbolic.mapper.substitutor import \
-        CachedSubstitutionMapper as SubstitutionMapperBase
-from pymbolic.mapper.stringifier import \
-        StringifyMapper as StringifyMapperBase
-from pymbolic.mapper.dependency import \
-        CachedDependencyMapper as DependencyMapperBase
-from pymbolic.mapper.coefficient import \
-        CoefficientCollector as CoefficientCollectorBase
-from pymbolic.mapper.unifier import UnidirectionalUnifier \
-        as UnidirectionalUnifierBase
-from pymbolic.mapper.constant_folder import \
-        ConstantFoldingMapper as ConstantFoldingMapperBase
-
+    CachedCombineMapper as CombineMapperBase,
+    CachedIdentityMapper as IdentityMapperBase,
+    CachedWalkMapper as WalkMapperBase,
+    CallbackMapper as CallbackMapperBase,
+    CSECachingMapperMixin,
+    IdentityMapper as UncachedIdentityMapperBase,
+    WalkMapper as UncachedWalkMapperBase,
+)
+from pymbolic.mapper.coefficient import CoefficientCollector as CoefficientCollectorBase
+from pymbolic.mapper.constant_folder import (
+    ConstantFoldingMapper as ConstantFoldingMapperBase,
+)
+from pymbolic.mapper.dependency import CachedDependencyMapper as DependencyMapperBase
+from pymbolic.mapper.evaluator import CachedEvaluationMapper as EvaluationMapperBase
+from pymbolic.mapper.stringifier import StringifyMapper as StringifyMapperBase
+from pymbolic.mapper.substitutor import (
+    CachedSubstitutionMapper as SubstitutionMapperBase,
+)
+from pymbolic.mapper.unifier import UnidirectionalUnifier as UnidirectionalUnifierBase
 from pymbolic.parser import Parser as ParserBase
-from loopy.diagnostic import LoopyError
-from loopy.diagnostic import (ExpressionToAffineConversionError,
-                              UnableToDetermineAccessRangeError)
+from pytools import ImmutableRecord, memoize, memoize_method, memoize_on_first_arg
+from pytools.tag import Taggable
+
+from loopy.diagnostic import (
+    ExpressionToAffineConversionError,
+    LoopyError,
+    UnableToDetermineAccessRangeError,
+)
 from loopy.typing import ExpressionT
 
 
@@ -277,10 +273,15 @@ class CombineMapper(CombineMapperBase):
     def map_reduction(self, expr, *args, **kwargs):
         return self.rec(expr.expr, *args, **kwargs)
 
-    def map_sub_array_ref(self, expr):
+    def map_type_cast(self, expr, *args, **kwargs):
+        return self.rec(expr.child, *args, **kwargs)
+
+    def map_sub_array_ref(self, expr, *args, **kwargs):
         return self.combine((
-            self.rec(expr.subscript),
-            self.combine(tuple(self.rec(idx) for idx in expr.swept_inames))))
+            self.rec(expr.subscript, *args, **kwargs),
+            self.combine(tuple(
+                         self.rec(idx, *args, **kwargs)
+                         for idx in expr.swept_inames))))
 
     map_linear_subscript = CombineMapperBase.map_subscript
 
@@ -643,7 +644,7 @@ class TypeCast(LoopyExpressionBase):
     def __init__(self, type, child):
         super().__init__()
 
-        from loopy.types import to_loopy_type, NumpyType
+        from loopy.types import NumpyType, to_loopy_type
         type = to_loopy_type(type)
 
         if (not isinstance(type, NumpyType)
@@ -1610,7 +1611,7 @@ class FunctionToPrimitiveMapper(UncachedIdentityMapper):
 
         elif name in ["minimum", "maximum"]:
             if len(expr.parameters) == 2:
-                from pymbolic.primitives import Min, Max
+                from pymbolic.primitives import Max, Min
                 return {
                     "minimum": Min,
                     "maximum": Max
@@ -1668,8 +1669,16 @@ class LoopyParser(ParserBase):
             return float(val)  # generic float
 
     def parse_prefix(self, pstate):
-        from pymbolic.parser import (_PREC_UNARY, _less, _greater, _identifier,
-                _openbracket, _closebracket, _colon)
+        from pymbolic.parser import (
+            _PREC_UNARY,
+            _closebracket,
+            _colon,
+            _greater,
+            _identifier,
+            _less,
+            _openbracket,
+        )
+
         import loopy as lp
 
         if pstate.is_next(_less):
@@ -1937,6 +1946,7 @@ def pwaff_from_expr(space, expr, vars_to_zero=None):
 def with_aff_conversion_guard(f, space, expr, *args):
     import islpy as isl
     from pymbolic.mapper.evaluator import UnknownVariableError
+
     from loopy.diagnostic import ExpressionNotAffineError
 
     err = None
@@ -2037,8 +2047,8 @@ def qpolynomial_from_expr(space, expr):
 # {{{ simplify using aff
 
 def simplify_via_aff(expr):
-    from loopy.symbolic import aff_to_expr, guarded_aff_from_expr, get_dependencies
     from loopy.diagnostic import ExpressionToAffineConversionError
+    from loopy.symbolic import aff_to_expr, get_dependencies, guarded_aff_from_expr
 
     deps = sorted(get_dependencies(expr))
     try:
@@ -2418,15 +2428,6 @@ class PrimeAdder(IdentityMapper):
 
 # {{{ get access range
 
-class UnableToDetermineAccessRange(UnableToDetermineAccessRangeError):
-    def __init__(self, *args, **kwargs):
-        from warnings import warn
-        warn("UnableToDetermineAccessRange renamed to"
-             " UnableToDetermineAccessRangeError,  will be unsupported in"
-             " 2022.", DeprecationWarning, stacklevel=2)
-        super().__init__(*args, **kwargs)
-
-
 def get_access_map(domain, subscript, assumptions=None, shape=None,
         allowed_constant_names=None):
     """
@@ -2506,7 +2507,7 @@ def get_access_map(domain, subscript, assumptions=None, shape=None,
                         "(encountered %s: %s)"
                         % (", ".join(str(si) for si in subscript),
                             # intentionally using 'outer' err
-                            type(err).__name__, str(err)))
+                            type(err).__name__, str(err))) from err
 
             # successfully converted shape[idim] to aff, but not subscript[idim]
 

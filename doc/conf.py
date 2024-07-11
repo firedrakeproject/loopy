@@ -1,6 +1,7 @@
 import os
 from urllib.request import urlopen
 
+
 _conf_url = "https://raw.githubusercontent.com/inducer/sphinxconfig/main/sphinxconfig.py"  # noqa
 with urlopen(_conf_url) as _inf:
     exec(compile(_inf.read(), _conf_url, "exec"), globals())
@@ -31,7 +32,6 @@ intersphinx_mapping = {
         "pyopencl": ("https://documen.tician.de/pyopencl", None),
         "cgen": ("https://documen.tician.de/cgen", None),
         "pymbolic": ("https://documen.tician.de/pymbolic", None),
-        "pytools": ("https://documen.tician.de/pytools", None),
         "pyrsistent": ("https://pyrsistent.readthedocs.io/en/latest/", None),
         }
 
@@ -45,6 +45,8 @@ intersphinx_mapping = {
 # this needs a setting of the same name across all packages involved, that's
 # why this name is as global-sounding as it is.
 import sys
+
+
 sys._BUILDING_SPHINX_DOCS = True
 
 nitpicky = True

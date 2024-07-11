@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
 __license__ = """
@@ -24,28 +25,41 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import sys
-from typing import (cast, Optional, Tuple, Union, FrozenSet, Type, Sequence,
-        List, Callable, ClassVar, TypeVar, TYPE_CHECKING)
-from dataclasses import dataclass
 import re
+import sys
+from dataclasses import dataclass
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    ClassVar,
+    FrozenSet,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 from warnings import warn
-
-from pytools import ImmutableRecord
-from pytools.tag import Taggable, Tag
 
 import numpy as np  # noqa
 
+from pytools import ImmutableRecord
+from pytools.tag import Tag, Taggable
+
 from loopy.diagnostic import LoopyError
 from loopy.tools import is_integer
-from loopy.typing import ExpressionT, ShapeType
 from loopy.types import LoopyType
+from loopy.typing import ExpressionT, ShapeType
+
 
 if TYPE_CHECKING:
-    from loopy.target import TargetBase
-    from loopy.kernel import LoopKernel
-    from loopy.kernel.data import auto, TemporaryVariable, ArrayArg
     from loopy.codegen import VectorizationInfo
+    from loopy.kernel import LoopKernel
+    from loopy.kernel.data import ArrayArg, TemporaryVariable, auto
+    from loopy.target import TargetBase
 
 if getattr(sys, "_BUILDING_SPHINX_DOCS", False):
     from loopy.target import TargetBase  # noqa: F811
@@ -368,7 +382,8 @@ def parse_array_dim_tags(dim_tags, n_axes=None, use_increasing_target_axes=False
             try:
                 dim_idx = dim_names.index(dim_name)
             except ValueError:
-                raise LoopyError("'%s' does not name an array axis" % dim_name)
+                raise LoopyError(
+                        "'%s' does not name an array axis" % dim_name) from None
 
             dim_tags[dim_idx] = val
 
@@ -759,7 +774,6 @@ class ArrayBase(ImmutableRecord, Taggable):
                 raise TypeError("invalid kwarg: %s" % kwarg_name)
 
         import loopy as lp
-
         from loopy.types import to_loopy_type
         dtype = to_loopy_type(dtype, allow_auto=True, allow_none=True,
                 for_atomic=for_atomic)
@@ -917,8 +931,9 @@ class ArrayBase(ImmutableRecord, Taggable):
 
     def __eq__(self, other):
         from loopy.symbolic import (
-                is_tuple_of_expressions_equal as istoee,
-                is_expression_equal as isee)
+            is_expression_equal as isee,
+            is_tuple_of_expressions_equal as istoee,
+        )
         return (
                 type(self) is type(other)
                 and self.name == other.name
@@ -1155,8 +1170,9 @@ def _apply_offset(sub: ExpressionT, ary: ArrayBase) -> ExpressionT:
     :arg ary: An instance of :class:`ArrayBase`.
     :arg array_name: Name to reference *ary* by.
     """
-    import loopy as lp
     from pymbolic import var
+
+    import loopy as lp
 
     if ary.offset:
         from loopy.kernel.data import TemporaryVariable
@@ -1204,7 +1220,7 @@ def get_access_info(kernel: "LoopKernel",
                     "%d (tagged '%s'), the index was not a compile-time "
                     "constant (but it has to be in order for code to be "
                     "generated). You likely want to unroll the iname(s) '%s'."
-                    % (ary.name, i, ary.dim_tags[i], str(e)))
+                    % (ary.name, i, ary.dim_tags[i], str(e))) from None
 
         if not is_integer(result):
             raise LoopyError("subscript '%s[%s]' has non-constant "

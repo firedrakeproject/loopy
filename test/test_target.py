@@ -20,21 +20,25 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from loopy.diagnostic import LoopyError
+import logging
 import sys
+
 import numpy as np
-import loopy as lp
+import pytest
+
+import pymbolic.primitives as prim
 import pyopencl as cl
 import pyopencl.clmath
 import pyopencl.clrandom
 import pyopencl.tools
-import pytest
-import pymbolic.primitives as prim
+import pyopencl.version
 
+import loopy as lp
+from loopy.diagnostic import LoopyError
 from loopy.target.c import CTarget
 from loopy.target.opencl import OpenCLTarget
 
-import logging
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -44,13 +48,13 @@ except ImportError:
 else:
     faulthandler.enable()
 
-from pyopencl.tools import pytest_generate_tests_for_pyopencl \
-        as pytest_generate_tests
+from pyopencl.tools import pytest_generate_tests_for_pyopencl as pytest_generate_tests
+
 
 __all__ = [
-        "pytest_generate_tests",
-        "cl"  # "cl.create_some_context"
-        ]
+    "cl",  # "cl.create_some_context"
+    "pytest_generate_tests"
+]
 
 
 from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa
@@ -191,7 +195,6 @@ def test_random123(ctx_factory, tp):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
-    import pyopencl.version  # noqa
     if cl.version.VERSION < (2016, 2):
         pytest.skip("Random123 RNG not supported in PyOpenCL < 2016.2")
 
@@ -388,8 +391,9 @@ def test_opencl_support_for_bool(ctx_factory):
 
 @pytest.mark.parametrize("target", [lp.PyOpenCLTarget, lp.ExecutableCTarget])
 def test_nan_support(ctx_factory, target):
-    from loopy.symbolic import parse
     from pymbolic.primitives import NaN, Variable
+
+    from loopy.symbolic import parse
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -431,7 +435,7 @@ def test_nan_support(ctx_factory, target):
 
 
 @pytest.mark.parametrize("target", [lp.PyOpenCLTarget, lp.ExecutableCTarget])
-def test_opencl_emits_ternary_operators_correctly(ctx_factory, target):
+def test_emits_ternary_operators_correctly(ctx_factory, target):
     # See: https://github.com/inducer/loopy/issues/390
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
@@ -485,8 +489,9 @@ def test_scalar_array_take_offset(ctx_factory):
 @pytest.mark.parametrize("target", [lp.PyOpenCLTarget, lp.ExecutableCTarget])
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 def test_inf_support(ctx_factory, target, dtype):
-    from loopy.symbolic import parse
     import math
+
+    from loopy.symbolic import parse
     # See: https://github.com/inducer/loopy/issues/443 for some laughs
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
@@ -595,6 +600,9 @@ def test_pyopencl_target_with_global_temps_with_base_storage(ctx_factory):
     knl = lp.tag_inames(knl, {"i": "g.0", "j": "g.0"})
     knl = lp.set_options(knl, return_dict=True)
 
+    knl = lp.preprocess_kernel(knl)
+    knl = lp.allocate_temporaries_for_base_storage(knl)
+
     my_allocator = RecordingAllocator(cq)
     _, out = knl(cq, allocator=my_allocator)
 
@@ -609,9 +617,10 @@ def test_pyopencl_target_with_global_temps_with_base_storage(ctx_factory):
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
 def test_glibc_bessel_functions(dtype):
     pytest.importorskip("scipy.special")
-    from scipy.special import jn, yn  # pylint: disable=no-name-in-module
-    from loopy.target.c.c_execution import CCompiler
     from numpy.random import default_rng
+    from scipy.special import jn, yn  # pylint: disable=no-name-in-module
+
+    from loopy.target.c.c_execution import CCompiler
 
     rng = default_rng(0)
     compiler = CCompiler(cflags=["-O3"])
@@ -803,6 +812,36 @@ def test_ispc_private_var():
     cg_result = lp.generate_code_v2(knl)
 
     print(cg_result.device_code())
+
+
+def test_to_complex_casts(ctx_factory):
+    arith_dtypes = "bhilqpBHILQPfdFD"
+
+    out_type = lp.to_loopy_type(np.dtype(np.complex128))
+    other = np.complex64(7)
+    from pymbolic import var
+
+    knl = lp.make_kernel(
+        [],
+        [
+            lp.Assignment(
+                f"out_{typename}",
+                lp.TypeCast(out_type, var(f"in_{typename}"))
+                +
+                lp.TypeCast(out_type, other)
+            )
+            for typename in arith_dtypes
+        ],
+        [
+            lp.GlobalArg(f"in_{typename}", dtype=np.dtype(typename), shape=())
+            for typename in arith_dtypes
+        ] + [...]
+    )
+
+    ctx = ctx_factory()
+    code = lp.generate_code_v2(knl).device_code()
+    # just testing here that the generated code builds
+    cl.Program(ctx, code).build()
 
 
 if __name__ == "__main__":
