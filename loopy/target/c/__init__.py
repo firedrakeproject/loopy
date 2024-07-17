@@ -547,8 +547,8 @@ class CMathCallable(ScalarCallable):
             else:
                 result_dtype = dtype
 
-            if dtype.kind == "c" or name in ["real", "imag", "abs"]:
-                if name != "conj":
+            if dtype.kind == "c" or name in ["real", "realf", "imag", "imagf"]:
+                if name not in ["conj", "conjf"]:
                     name = "c" + name
 
             return (
@@ -683,6 +683,9 @@ class CMathCallable(ScalarCallable):
             inline static int {self.name_in_target}({ctype} x) {{
               return 0;
             }}""")
+
+        if isinstance(target, CTarget):
+            yield ("50_cmath", "#include <math.h>")
 
 
 class GNULibcCallable(ScalarCallable):
