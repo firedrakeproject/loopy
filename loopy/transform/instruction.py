@@ -267,6 +267,7 @@ def replace_instruction_ids_in_insn(
     new_no_sync_with: List[Tuple[str, str]] = []
 
     if insn.id in replacements:
+        assert isinstance(insn.id, str)
         insn = insn.copy(id=replacements[insn.id][0])
 
     new_depends_on = list(insn.depends_on)
@@ -425,7 +426,7 @@ def add_nosync(kernel, scope, source, sink, bidirectional=False, force=False,
     if not nosync_to_add and not empty_ok:
         raise LoopyError("No nosync annotations were added as a result "
                 "of this call. add_nosync will (by default) only add them to "
-                "accompany existing depencies or group exclusions. Maybe you want "
+                "accompany existing dependencies or group exclusions. Maybe you want "
                 "to pass force=True?")
 
     new_instructions = list(kernel.instructions)

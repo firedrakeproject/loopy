@@ -34,6 +34,7 @@ import numpy as np
 import islpy as isl
 from islpy import dim_type
 from pytools import memoize_on_first_arg, natsorted
+from pytools.tag import Tag
 
 from loopy.diagnostic import LoopyError, warn_with_kernel
 from loopy.kernel import LoopKernel
@@ -44,7 +45,8 @@ from loopy.kernel.instruction import (
     _DataObliviousInstruction,
 )
 from loopy.symbolic import CombineMapper
-from loopy.translation_unit import TranslationUnit, for_each_kernel
+from loopy.translation_unit import TranslationUnit, TUnitOrKernelT, for_each_kernel
+from loopy.types import ToLoopyTypeConvertible
 
 
 logger = logging.getLogger(__name__)
@@ -52,15 +54,20 @@ logger = logging.getLogger(__name__)
 
 # {{{ add and infer argument dtypes
 
-def add_dtypes(prog_or_kernel, dtype_dict):
+def add_dtypes(
+            kernel: TUnitOrKernelT,
+            dtype_dict: Mapping[str, ToLoopyTypeConvertible],
+        ) -> TUnitOrKernelT:
     """Specify remaining unspecified argument/temporary variable types.
 
     :arg dtype_dict: a mapping from variable names to :class:`numpy.dtype`
         instances
     """
-    if isinstance(prog_or_kernel, TranslationUnit):
+    if isinstance(kernel, TranslationUnit):
+        t_unit = kernel
+        del kernel
         kernel_names = [clbl.subkernel.name for clbl in
-                prog_or_kernel.callables_table.values() if isinstance(clbl,
+                t_unit.callables_table.values() if isinstance(clbl,
                     CallableKernel)]
         if len(kernel_names) != 1:
             raise LoopyError("add_dtypes may not take a TranslationUnit with more"
@@ -69,10 +76,10 @@ def add_dtypes(prog_or_kernel, dtype_dict):
 
         kernel_name, = kernel_names
 
-        return prog_or_kernel.with_kernel(
-                add_dtypes(prog_or_kernel[kernel_name], dtype_dict))
+        return t_unit.with_kernel(
+                add_dtypes(t_unit[kernel_name], dtype_dict))
 
-    assert isinstance(prog_or_kernel, LoopKernel)
+    assert isinstance(kernel, LoopKernel)
 
     processed_dtype_dict = {}
 
@@ -83,13 +90,13 @@ def add_dtypes(prog_or_kernel, dtype_dict):
                 processed_dtype_dict[subkey] = v
 
     dtype_dict_remainder, new_args, new_temp_vars = _add_dtypes(
-            prog_or_kernel, processed_dtype_dict)
+            kernel, processed_dtype_dict)
 
     if dtype_dict_remainder:
         raise RuntimeError("unused argument dtypes: %s"
                 % ", ".join(dtype_dict_remainder))
 
-    return prog_or_kernel.copy(args=new_args, temporary_variables=new_temp_vars)
+    return kernel.copy(args=new_args, temporary_variables=new_temp_vars)
 
 
 def _add_dtypes_overdetermined(kernel, dtype_dict):
@@ -263,7 +270,7 @@ def find_all_insn_inames(kernel):
             if insn.within_inames_is_final:
                 continue
 
-            # {{{ depdency-based propagation
+            # {{{ dependency-based propagation
 
             inames_old = insn_id_to_inames[insn.id]
             inames_new = inames_old | guess_iname_deps_based_on_var_use(
@@ -513,8 +520,8 @@ def get_dot_dependency_graph(kernel, callables_table, iname_cluster=True,
     """
 
     # make sure all automatically added stuff shows up
-    from loopy.kernel.creation import apply_single_writer_depencency_heuristic
-    kernel = apply_single_writer_depencency_heuristic(kernel, warn_if_used=False)
+    from loopy.kernel.creation import apply_single_writer_dependency_heuristic
+    kernel = apply_single_writer_dependency_heuristic(kernel, warn_if_used=False)
 
     if iname_cluster and not kernel.linearization:
         try:
@@ -1252,9 +1259,9 @@ def find_recursive_dependencies(kernel, insn_ids):
 
         for insn_id in queue:
             insn = kernel.id_to_insn[insn_id]
-            additionals = insn.depends_on - result
-            result.update(additionals)
-            new_queue.extend(additionals)
+            additional = insn.depends_on - result
+            result.update(additional)
+            new_queue.extend(additional)
 
         queue = new_queue
 
@@ -1477,7 +1484,7 @@ def draw_dependencies_as_unicode_arrows(
 
 # {{{ stringify_instruction_list
 
-def stringify_instruction_tag(tag):
+def stringify_instruction_tag(tag: Tag) -> str:
     from loopy.kernel.instruction import LegacyStringInstructionTag
     if isinstance(tag, LegacyStringInstructionTag):
         return f"S({tag.value})"
@@ -1485,7 +1492,7 @@ def stringify_instruction_tag(tag):
         return str(tag)
 
 
-def stringify_instruction_list(kernel):
+def stringify_instruction_list(kernel: LoopKernel) -> list[str]:
     # {{{ topological sort
 
     printed_insn_ids = set()
@@ -1519,7 +1526,7 @@ def stringify_instruction_list(kernel):
 
     leader = " " * uniform_arrow_length
     lines = []
-    current_inames = [set()]
+    current_inames: list[set[str]] = [set()]
 
     if uniform_arrow_length:
         indent_level = [1]
@@ -1530,13 +1537,13 @@ def stringify_instruction_list(kernel):
 
     iname_order = kernel._get_iname_order_for_printing()
 
-    def add_pre_line(s):
+    def add_pre_line(s: str) -> None:
         lines.append(leader + " " * indent_level[0] + s)
 
-    def add_main_line(s):
+    def add_main_line(s: str) -> None:
         lines.append(arrows + " " * indent_level[0] + s)
 
-    def add_post_line(s):
+    def add_post_line(s: str) -> None:
         lines.append(extender + " " * indent_level[0] + s)
 
     def adapt_to_new_inames_list(new_inames):
@@ -1735,7 +1742,7 @@ def get_global_barrier_order(kernel):
 
 @memoize_on_first_arg
 def find_most_recent_global_barrier(kernel, insn_id):
-    """Return the id of the latest occuring global barrier which the
+    """Return the id of the latest occurring global barrier which the
     given instruction (indirectly or directly) depends on, or *None* if this
     instruction does not depend on a global barrier.
 
@@ -1995,7 +2002,7 @@ def infer_args_are_input_output(kernel):
         elif isinstance(arg, (ConstantArg, ImageArg, ValueArg)):
             pass
         else:
-            raise NotImplementedError("Unkonwn argument type %s." % type(arg))
+            raise NotImplementedError("Unknown argument type %s." % type(arg))
 
         if not (arg.is_input or arg.is_output):
             raise LoopyError("Kernel argument must be either input or output."

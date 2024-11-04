@@ -1,15 +1,3 @@
-"""
-.. autoclass:: IntegralT
-.. autoclass:: FloatT
-.. autoclass:: ExpressionT
-.. autoclass:: ShapeType
-.. autoclass:: auto
-"""
-
-
-from __future__ import annotations
-
-
 __copyright__ = "Copyright (C) 2022 University of Illinois Board of Trustees"
 
 __license__ = """
@@ -32,38 +20,31 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+from pyopencl.tools import (  # noqa: F401
+    pytest_generate_tests_for_pyopencl as pytest_generate_tests,
+)
 
-from typing import Optional, Tuple, TypeVar, Union
-
-import numpy as np
-from typing_extensions import TypeAlias
-
-from pymbolic.primitives import Expression
+from loopy.schedule.tree import Tree
 
 
-IntegralT: TypeAlias = Union[int, np.int8, np.int16, np.int32, np.int64, np.uint8,
-                  np.uint16, np.uint32, np.uint64]
-FloatT: TypeAlias = Union[float, complex, np.float32, np.float64, np.complex64,
-        np.complex128]
+def test_tree_simple():
+    tree = Tree.from_root("")
 
+    tree = tree.add_node("bar", parent="")
+    tree = tree.add_node("baz", parent="bar")
 
-ExpressionT: TypeAlias = Union[IntegralT, FloatT, Expression]
-ShapeType: TypeAlias = Tuple[ExpressionT, ...]
-StridesType: TypeAlias = ShapeType
+    assert tree.depth("") == 0
+    assert tree.depth("bar") == 1
+    assert tree.depth("baz") == 2
 
-InameStr: TypeAlias = str
+    assert "" in tree
+    assert "bar" in tree
+    assert "baz" in tree
+    assert "foo" not in tree
 
+    tree = tree.replace_node("bar", "foo")
+    assert "bar" not in tree
+    assert "foo" in tree
 
-class auto:  # noqa
-    """A generic placeholder object for something that should be automatically
-    determined.  See, for example, the *shape* or *strides* argument of
-    :class:`~loopy.ArrayArg`.
-    """
-
-
-T = TypeVar("T")
-
-
-def not_none(obj: Optional[T]) -> T:
-    assert obj is not None
-    return obj
+    tree = tree.move_node("baz", new_parent="")
+    assert tree.depth("baz") == 1

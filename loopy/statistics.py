@@ -36,7 +36,7 @@ import loopy as lp
 from loopy.diagnostic import LoopyError, warn_with_kernel
 from loopy.kernel.data import AddressSpace, MultiAssignmentBase, TemporaryVariable
 from loopy.kernel.function_interface import CallableKernel
-from loopy.symbolic import CoefficientCollector
+from loopy.symbolic import CoefficientCollector, flatten
 from loopy.translation_unit import TranslationUnit
 
 
@@ -422,16 +422,16 @@ class ToCountMap:
             bytes_map = get_mem_access_map(knl).to_bytes()
             params = {"n": 512, "m": 256, "l": 128}
 
-            s1_g_ld_byt = bytes_map.filter_by(
+            s1_g_ld_bytes = bytes_map.filter_by(
                                 mtype=["global"], lid_strides={0: 1},
                                 direction=["load"]).eval_and_sum(params)
-            s2_g_ld_byt = bytes_map.filter_by(
+            s2_g_ld_bytes = bytes_map.filter_by(
                                 mtype=["global"], lid_strides={0: 2},
                                 direction=["load"]).eval_and_sum(params)
-            s1_g_st_byt = bytes_map.filter_by(
+            s1_g_st_bytes = bytes_map.filter_by(
                                 mtype=["global"], lid_strides={0: 1},
                                 direction=["store"]).eval_and_sum(params)
-            s2_g_st_byt = bytes_map.filter_by(
+            s2_g_st_bytes = bytes_map.filter_by(
                                 mtype=["global"], lid_strides={0: 2},
                                 direction=["store"]).eval_and_sum(params)
 
@@ -629,7 +629,7 @@ class Op(ImmutableRecord):
        work-group executes on a single compute unit with all work-items within
        the work-group sharing local memory. A sub-group is an
        implementation-dependent grouping of work-items within a work-group,
-       analagous to an NVIDIA CUDA warp.
+       analogous to an NVIDIA CUDA warp.
 
     .. attribute:: kernel_name
 
@@ -709,7 +709,7 @@ class MemAccess(ImmutableRecord):
     .. attribute:: variable_tags
 
        A :class:`frozenset` of subclasses of :class:`~pytools.tag.Tag`
-       that reflects :attr:`~loopy.symbolic.TaggedVariable.tags` of
+       that reflects :attr:`~loopy.TaggedVariable.tags` of
        an accessed variable.
 
     .. attribute:: count_granularity
@@ -723,7 +723,7 @@ class MemAccess(ImmutableRecord):
        work-group executes on a single compute unit with all work-items within
        the work-group sharing local memory. A sub-group is an
        implementation-dependent grouping of work-items within a work-group,
-       analagous to an NVIDIA CUDA warp.
+       analogous to an NVIDIA CUDA warp.
 
     .. attribute:: kernel_name
 
@@ -1109,7 +1109,7 @@ def _get_lid_and_gid_strides(knl, array, index):
 
     # create lid_strides and gid_strides dicts
 
-    # strides are coefficents in flattened index, i.e., we want
+    # strides are coefficients in flattened index, i.e., we want
     # lid_strides = {0:l0, 1:l1, 2:l2, ...} and
     # gid_strides = {0:g0, 1:g1, 2:g2, ...},
     # where l0, l1, l2, g0, g1, and g2 come from flattened index
@@ -1167,7 +1167,7 @@ def _get_lid_and_gid_strides(knl, array, index):
 
                 total_iname_stride += axis_tag_stride*coeff
 
-            tag_to_stride_dict[tag] = total_iname_stride
+            tag_to_stride_dict[tag] = flatten(total_iname_stride)
 
         return tag_to_stride_dict
 
@@ -1723,7 +1723,7 @@ def get_op_map(program, count_redundant_work=False,
     :arg subgroup_size: (currently unused) An :class:`int`, :class:`str`
         ``"guess"``, or *None* that specifies the sub-group size. An OpenCL
         sub-group is an implementation-dependent grouping of work-items within
-        a work-group, analagous to an NVIDIA CUDA warp. subgroup_size is used,
+        a work-group, analogous to an NVIDIA CUDA warp. subgroup_size is used,
         e.g., when counting a :class:`MemAccess` whose count_granularity
         specifies that it should only be counted once per sub-group. If set to
         *None* an attempt to find the sub-group size using the device will be
@@ -1921,7 +1921,7 @@ def get_mem_access_map(program, count_redundant_work=False,
     :arg subgroup_size: An :class:`int`, :class:`str` ``"guess"``, or
         *None* that specifies the sub-group size. An OpenCL sub-group is an
         implementation-dependent grouping of work-items within a work-group,
-        analagous to an NVIDIA CUDA warp. subgroup_size is used, e.g., when
+        analogous to an NVIDIA CUDA warp. subgroup_size is used, e.g., when
         counting a :class:`MemAccess` whose count_granularity specifies that it
         should only be counted once per sub-group. If set to *None* an attempt
         to find the sub-group size using the device will be made, if this fails
@@ -2085,7 +2085,7 @@ def get_synchronization_map(program, subgroup_size=None, entrypoint=None):
     :arg subgroup_size: (currently unused) An :class:`int`, :class:`str`
         ``"guess"``, or *None* that specifies the sub-group size. An OpenCL
         sub-group is an implementation-dependent grouping of work-items within
-        a work-group, analagous to an NVIDIA CUDA warp. subgroup_size is used,
+        a work-group, analogous to an NVIDIA CUDA warp. subgroup_size is used,
         e.g., when counting a :class:`MemAccess` whose count_granularity
         specifies that it should only be counted once per sub-group. If set to
         *None* an attempt to find the sub-group size using the device will be

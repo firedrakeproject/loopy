@@ -26,6 +26,7 @@ THE SOFTWARE.
 import logging
 import re
 from sys import intern
+from typing import Any
 
 import numpy as np
 
@@ -48,7 +49,7 @@ from loopy.kernel.data import (
 )
 from loopy.symbolic import IdentityMapper, SubArrayRef, WalkMapper
 from loopy.tools import Optional, intern_frozenset_of_ids
-from loopy.translation_unit import for_each_kernel
+from loopy.translation_unit import TranslationUnit, for_each_kernel
 
 
 logger = logging.getLogger(__name__)
@@ -1069,7 +1070,8 @@ def parse_domains(domains, defines):
         if isinstance(dom, str):
             dom, = expand_defines(dom, defines)
 
-            if not dom.lstrip().startswith("["):
+            # pylint warning is spurious
+            if not dom.lstrip().startswith("["):  # pylint: disable=no-member
                 # i.e. if no parameters are already given
                 parameters = (_gather_isl_identifiers(dom)
                         - _find_inames_in_set(dom)
@@ -1884,7 +1886,7 @@ def add_inferred_inames(knl):
 # {{{ apply single-writer heuristic
 
 @for_each_kernel
-def apply_single_writer_depencency_heuristic(kernel, warn_if_used=True,
+def apply_single_writer_dependency_heuristic(kernel, warn_if_used=True,
         error_if_used=False):
     logger.debug("%s: default deps" % kernel.name)
 
@@ -2023,7 +2025,7 @@ class SliceToInameReplacer(IdentityMapper):
     .. attribute:: subarray_ref_bounds
 
         A :class:`list` (one entry for each :class:`SubArrayRef` to be created)
-        of :class:`dict` instances to store the slices enountered in the
+        of :class:`dict` instances to store the slices encountered in the
         expressions as a mapping from ``iname`` to a tuple of ``(start, stop,
         step)``, which describes the boxy (i.e. affine) constraints imposed on
         the ``iname`` by the corresponding slice notation its intended to
@@ -2536,13 +2538,6 @@ def make_function(domains, instructions, kernel_data=None, **kwargs):
 
     assert len(knl.instructions) == len(inames_to_dup)
 
-    from loopy import duplicate_inames
-    from loopy.match import Id
-    for insn, insn_inames_to_dup in zip(knl.instructions, inames_to_dup):
-        for old_iname, new_iname in insn_inames_to_dup:
-            knl = duplicate_inames(knl, old_iname,
-                    within=Id(insn.id), new_inames=new_iname)
-
     check_for_nonexistent_iname_deps(knl)
 
     knl = create_temporaries(knl, default_order)
@@ -2563,6 +2558,27 @@ def make_function(domains, instructions, kernel_data=None, **kwargs):
     knl = add_inferred_inames(knl)
     from loopy.transform.parameter import fix_parameters
     knl = fix_parameters(knl, **fixed_parameters)
+
+    # -------------------------------------------------------------------------
+    # Ordering dependency:
+    # -------------------------------------------------------------------------
+    # Must duplicate inames after adding all the inames to the instructions.
+    # To duplicate an iname "i" in statement "S", lp.duplicate requires that
+    # the statement "S" be nested within the iname "i".
+    # -------------------------------------------------------------------------
+    from loopy import duplicate_inames
+    from loopy.match import Id
+    for insn, insn_inames_to_dup in zip(knl.instructions, inames_to_dup):
+        for old_iname, new_iname in insn_inames_to_dup:
+            knl = duplicate_inames(knl, old_iname,
+                    within=Id(insn.id), new_inames=new_iname)
+            new_insn = knl.id_to_insn[insn.id]
+            assert old_iname not in (
+                new_insn.within_inames
+                | new_insn.reduction_inames()
+                | new_insn.sub_array_ref_inames()
+            )
+
     # -------------------------------------------------------------------------
     # Ordering dependency:
     # -------------------------------------------------------------------------
@@ -2574,7 +2590,7 @@ def make_function(domains, instructions, kernel_data=None, **kwargs):
     knl = guess_arg_shape_if_requested(knl, default_order)
     knl = apply_default_order_to_args(knl, default_order)
     knl = resolve_dependencies(knl)
-    knl = apply_single_writer_depencency_heuristic(knl, warn_if_used=False)
+    knl = apply_single_writer_dependency_heuristic(knl, warn_if_used=False)
 
     # -------------------------------------------------------------------------
     # Ordering dependency:
@@ -2600,7 +2616,7 @@ def make_function(domains, instructions, kernel_data=None, **kwargs):
 
 # {{{ make_kernel
 
-def make_kernel(*args, **kwargs):
+def make_kernel(*args: Any, **kwargs: Any) -> TranslationUnit:
     tunit = make_function(*args, **kwargs)
     name, = tunit.callables_table
     return tunit.with_entrypoints(name)

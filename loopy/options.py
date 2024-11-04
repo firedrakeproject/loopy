@@ -23,6 +23,7 @@ THE SOFTWARE.
 
 import os
 import re
+from typing import Any
 from warnings import warn
 
 from pytools import ImmutableRecord
@@ -118,7 +119,7 @@ class Options(ImmutableRecord):
 
     .. attribute:: cl_exec_manage_array_events
 
-        Within the PyOpenCL executor, respect and udpate
+        Within the PyOpenCL executor, respect and update
         :attr:`pyopencl.array.Array.events`.
 
         Defaults to *True*.
@@ -156,7 +157,7 @@ class Options(ImmutableRecord):
 
         Allow re-ordering of floating point arithmetic. Re-ordering may
         give different results as floating point arithmetic is not
-        associative in addition and mulitplication. Default is *True*.
+        associative in addition and multiplication. Default is *True*.
         Note that the implementation of this option is currently incomplete.
 
     .. attribute:: build_options
@@ -214,7 +215,7 @@ class Options(ImmutableRecord):
             # All defaults are further required to be False when cast to bool
             # for the update() functionality to work.
 
-            self, **kwargs):
+            self, **kwargs: Any) -> None:
 
         kwargs = _apply_legacy_map(self._legacy_options_map, kwargs)
 

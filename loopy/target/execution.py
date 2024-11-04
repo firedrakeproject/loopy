@@ -187,7 +187,7 @@ class ExecutionWrapperGeneratorBase(ABC):
                         if shape_i is not None:
                             equations.append(
                                 _ArgFindingEquation(
-                                    lhs=var(arg.name).attr("shape").index(axis_nr),
+                                    lhs=var(arg.name).attr("shape")[axis_nr],
                                     rhs=shape_i,
                                     order=0,
                                     based_on_names=frozenset({arg.name})))
@@ -198,7 +198,7 @@ class ExecutionWrapperGeneratorBase(ABC):
                         equations.append(
                                 _ArgFindingEquation(
                                     lhs=var("_lpy_even_div")(
-                                        var(arg.name).attr("strides").index(axis_nr),
+                                        var(arg.name).attr("strides")[axis_nr],
                                         arg.dtype.itemsize),
                                     rhs=_str_to_expr(stride_i),
                                     order=0,
@@ -377,21 +377,21 @@ class ExecutionWrapperGeneratorBase(ABC):
 
     # }}}
 
-    # {{{ handle non numpy arguements
+    # {{{ handle non numpy arguments
 
     def handle_non_numpy_arg(self, gen: CodeGenerator, arg):
         raise NotImplementedError()
 
     # }}}
 
-    # {{{ handle allocation of unspecified arguements
+    # {{{ handle allocation of unspecified arguments
 
     def handle_alloc(
             self, gen: CodeGenerator, arg: ArrayArg,
             strify: Callable[[Union[ExpressionT, Tuple[ExpressionT]]], str],
             skip_arg_checks: bool) -> None:
         """
-        Handle allocation of non-specified arguements for C-execution
+        Handle allocation of non-specified arguments for C-execution
         """
         raise NotImplementedError()
 
@@ -647,7 +647,7 @@ class ExecutionWrapperGeneratorBase(ABC):
 
     def initialize_system_args(self, gen):
         """
-        Override to intialize any default system args
+        Override to initialize any default system args
         """
         raise NotImplementedError()
 
@@ -674,7 +674,7 @@ class ExecutionWrapperGeneratorBase(ABC):
         """
         Generates the wrapping python invoker for this execution target
 
-        :arg kernel: the loopy :class:`LoopKernel`(s) to be executued
+        :arg kernel: the loopy :class:`LoopKernel`(s) to be executed
         :codegen_result: the loopy :class:`CodeGenerationResult` created
         by code generation
 
@@ -944,7 +944,7 @@ class ExecutorBase:
 
 # }}}
 
-# {{{ code highlighers
+# {{{ code highlighters
 
 
 def get_highlighted_code(text, python=False):

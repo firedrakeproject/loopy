@@ -27,10 +27,20 @@ import collections
 from collections.abc import Set as abc_Set
 from dataclasses import dataclass, field, replace
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Callable, FrozenSet, Mapping, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    FrozenSet,
+    Mapping,
+    Optional,
+    TypeVar,
+    Union,
+)
 from warnings import warn
 
 from immutables import Map
+from typing_extensions import Concatenate, ParamSpec, Self
 
 from pymbolic.primitives import Call, Variable
 
@@ -76,8 +86,16 @@ __doc__ = """
 
 .. autofunction:: make_program
 
+.. autofunction:: check_each_kernel
+
 .. autofunction:: for_each_kernel
 
+.. autoclass:: TUnitOrKernelT
+
+.. class:: P
+
+    A :class:`typing.ParamSpec` for use in annotating :func:`for_each_kernel` and
+    :func:`check_each_kernel`.
 """
 
 
@@ -182,6 +200,8 @@ class TranslationUnit:
         The :class:`~loopy.LoopKernel` representing the main entrypoint
         of the program, if defined. Currently, this attribute may only be
         accessed if there is exactly one entrypoint in the translation unit.
+        Will raise an error if the default entrypoint is not a
+        :class:`~loopy.LoopKernel`.
 
     .. attribute:: callables_table
 
@@ -196,7 +216,7 @@ class TranslationUnit:
     .. attribute:: func_id_to_in_knl_callables_mappers
 
         A :class:`frozenset` of functions of the signature ``(target:
-        TargetBase, function_indentifier: str)`` that returns an instance
+        TargetBase, function_identifier: str)`` that returns an instance
         of :class:`loopy.kernel.function_interface.InKernelCallable` or *None*.
 
     .. automethod:: executor
@@ -226,9 +246,9 @@ class TranslationUnit:
 
         object.__setattr__(self, "_program_executor_cache", {})
 
-    def copy(self, **kwargs):
+    def copy(self, **kwargs: Any) -> Self:
         target = kwargs.pop("target", None)
-        program = replace(self, **kwargs)
+        t_unit = replace(self, **kwargs)
         if target:
             from loopy.kernel import KernelState
             if max(callable_knl.subkernel.state
@@ -240,7 +260,7 @@ class TranslationUnit:
                             "preprocessed, cannot modify target now.")
 
             new_callables = {}
-            for func_id, clbl in program.callables_table.items():
+            for func_id, clbl in t_unit.callables_table.items():
                 if isinstance(clbl, CallableKernel):
                     knl = clbl.subkernel
                     knl = knl.copy(target=target)
@@ -251,16 +271,12 @@ class TranslationUnit:
                     raise NotImplementedError()
                 new_callables[func_id] = clbl
 
-            program = replace(
+            t_unit = replace(
                     self, callables_table=Map(new_callables), target=target)
 
-        return program
+        return t_unit
 
-    def with_entrypoints(self, entrypoints):
-        """
-        :param entrypoints: Either a comma-separated :class:`str` or
-        :class:`frozenset`.
-        """
+    def with_entrypoints(self, entrypoints: str | frozenset[str]) -> Self:
         if isinstance(entrypoints, str):
             entrypoints = frozenset([e.strip() for e in
                 entrypoints.split(",")])
@@ -278,7 +294,7 @@ class TranslationUnit:
                     if isinstance(callable_knl, CallableKernel)),
                    default=KernelState.INITIAL)
 
-    def with_kernel(self, kernel):
+    def with_kernel(self, kernel: LoopKernel) -> Self:
         """
         If *self* contains a callable kernel with *kernel*'s name, replaces its
         subkernel and returns a copy of *self*. Else records a new callable
@@ -300,9 +316,9 @@ class TranslationUnit:
             new_callables = self.callables_table.set(kernel.name, clbl)
             return self.copy(callables_table=new_callables)
 
-    def __getitem__(self, name):
+    def __getitem__(self, name) -> LoopKernel:
         """
-        For the callable named *name*, return a :class:`loopy.LoopKernel` if
+        For the callable named *name*, return a :class:`loopy.LoopKernel`. if
         it's a :class:`~loopy.kernel.function_interface.CallableKernel`
         otherwise return the callable itself.
         """
@@ -310,13 +326,20 @@ class TranslationUnit:
         if isinstance(result, CallableKernel):
             return result.subkernel
         else:
-            return result
+            raise ValueError("TranslationUnit.__getitem__ "
+                             "can only be used for instances of LoopKernel. "
+                             "Access all other callables via callables_table.")
 
     @property
-    def default_entrypoint(self):
+    def default_entrypoint(self) -> LoopKernel:
         if len(self.entrypoints) == 1:
-            entrypoint, = self.entrypoints
-            return self[entrypoint]
+            ep_name, = self.entrypoints
+            entrypoint = self[ep_name]
+
+            if not isinstance(entrypoint, LoopKernel):
+                raise ValueError("default entrypoint is not a kernel")
+
+            return entrypoint
         else:
             raise ValueError("TranslationUnit has multiple possible entrypoints."
                              " The default entrypoint kernel is not uniquely"
@@ -726,6 +749,9 @@ class CallablesInferenceContext:
 # }}}
 
 
+TUnitOrKernelT = TypeVar("TUnitOrKernelT", LoopKernel, TranslationUnit)
+
+
 # {{{ helper functions
 
 def make_program(kernel: LoopKernel) -> TranslationUnit:
@@ -741,21 +767,46 @@ def make_program(kernel: LoopKernel) -> TranslationUnit:
             entrypoints=frozenset())
 
 
-def for_each_kernel(transform):
+P = ParamSpec("P")
+
+
+def check_each_kernel(
+            check: Callable[Concatenate[LoopKernel, P], None]
+        ) -> Callable[Concatenate[TranslationUnit, P], None]:
+    def _collective_check(
+                t_unit_or_kernel: TranslationUnit | LoopKernel, /,
+                *args: P.args,
+                **kwargs: P.kwargs
+            ) -> None:
+        if isinstance(t_unit_or_kernel, TranslationUnit):
+            for clbl in t_unit_or_kernel.callables_table.values():
+                if isinstance(clbl, CallableKernel):
+                    check(clbl.subkernel, *args, **kwargs)
+                elif isinstance(clbl, ScalarCallable):
+                    pass
+                else:
+                    raise NotImplementedError(f"{type(clbl)}")
+        elif isinstance(t_unit_or_kernel, LoopKernel):
+            check(t_unit_or_kernel, *args, **kwargs)
+        else:
+            raise TypeError("expected LoopKernel or TranslationUnit")
+
+    return wraps(check)(_collective_check)
+
+
+def for_each_kernel(
+            transform: Callable[Concatenate[LoopKernel, P], LoopKernel]
+        ) -> Callable[Concatenate[TUnitOrKernelT, P], TUnitOrKernelT]:
     """
     Function wrapper for transformations of the type ``transform(kernel:
     LoopKernel, *args, **kwargs) -> LoopKernel``. Returns a function that would
     apply *transform* to all callable kernels in a :class:`loopy.TranslationUnit`.
     """
-    def _collective_transform(*args, **kwargs):
-        if "translation_unit" in kwargs:
-            t_unit_or_kernel = kwargs.pop("translation_unit")
-        elif "kernel" in kwargs:
-            t_unit_or_kernel = kwargs.pop("kernel")
-        else:
-            t_unit_or_kernel = args[0]
-            args = args[1:]
-
+    def _collective_transform(
+                t_unit_or_kernel: TUnitOrKernelT, /,
+                *args: P.args,
+                **kwargs: P.kwargs
+            ) -> TUnitOrKernelT:
         if isinstance(t_unit_or_kernel, TranslationUnit):
             t_unit = t_unit_or_kernel
             new_callables = {}
@@ -771,10 +822,11 @@ def for_each_kernel(transform):
                 new_callables[func_id] = clbl
 
             return t_unit.copy(callables_table=Map(new_callables))
-        else:
-            assert isinstance(t_unit_or_kernel, LoopKernel)
+        elif isinstance(t_unit_or_kernel, LoopKernel):
             kernel = t_unit_or_kernel
             return transform(kernel, *args, **kwargs)
+        else:
+            raise TypeError("expected LoopKernel or TranslationUnit")
 
     return wraps(transform)(_collective_transform)
 
