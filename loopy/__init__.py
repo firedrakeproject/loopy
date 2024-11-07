@@ -56,6 +56,7 @@ from loopy.kernel.instruction import (
     BarrierInstruction,
     CallInstruction,
     CInstruction,
+    HappensAfter,
     InstructionBase,
     LegacyStringInstructionTag,
     MemoryOrdering,
@@ -203,15 +204,9 @@ from loopy.transform.subst import (
     find_rules_matching,
 )
 from loopy.translation_unit import TranslationUnit, for_each_kernel, make_program
-
-# }}}
 from loopy.type_inference import infer_unknown_types
 from loopy.types import to_loopy_type
-
-# {{{ imported user interface
 from loopy.typing import auto
-
-# {{{ import transforms
 from loopy.version import MOST_RECENT_LANGUAGE_VERSION, VERSION
 
 
@@ -242,6 +237,7 @@ __all__ = [
     "ExecutorBase",
     "GeneratedProgram",
     "GlobalArg",
+    "HappensAfter",
     "ISPCTarget",
     "ImageArg",
     "InKernelCallable",
@@ -563,18 +559,18 @@ def make_copy_kernel(new_dim_tags, old_dim_tags=None):
 
     indices = ["i%d" % i for i in range(rank)]
     shape = ["n%d" % i for i in range(rank)]
-    commad_indices = ", ".join(indices)
+    command_indices = ", ".join(indices)
     bounds = " and ".join(
             f"0<={ind}<{shape_i}"
             for ind, shape_i in zip(indices, shape))
 
     set_str = "{{[{}]: {} }}".format(
-                commad_indices,
+                command_indices,
                 bounds
                 )
     result = make_kernel(set_str,
             "output[%s] = input[%s]"
-            % (commad_indices, commad_indices),
+            % (command_indices, command_indices),
             lang_version=MOST_RECENT_LANGUAGE_VERSION,
             default_offset=auto)
 

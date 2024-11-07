@@ -7,6 +7,10 @@ on:
     schedule:
         - cron:  '17 3 * * 0'
 
+concurrency:
+    group: ${{ github.head_ref || github.ref_name }}
+    cancel-in-progress: true
+
 jobs:
     ruff:
         name: Ruff
@@ -19,6 +23,13 @@ jobs:
             run: |
                 pipx install ruff
                 ruff check
+
+    typos:
+        name: Typos
+        runs-on: ubuntu-latest
+        steps:
+        -   uses: actions/checkout@v4
+        -   uses: crate-ci/typos@master
 
     pylint:
         name: Pylint

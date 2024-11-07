@@ -2306,7 +2306,7 @@ def test_barrier_in_overridden_get_grid_size_expanded_kernel():
 
     from testlib import GridOverride
 
-    # artifically expand via overridden_get_grid_sizes_for_insn_ids
+    # artificially expand via overridden_get_grid_sizes_for_insn_ids
     knl = prog["loopy_kernel"]
     knl = knl.copy(overridden_get_grid_sizes_for_insn_ids=GridOverride(
         knl.copy(), vecsize))
@@ -3687,6 +3687,21 @@ def test_no_unnecessary_lbarrier(ctx_factory):
                                        t_unit.callables_table)
 
     assert not barrier_between(knl, "write_s_a", "write_ao")
+
+
+def test_long_kernel():
+    n = 500
+    insns = [
+        f"a{i}[j{i}] = j{i}"
+        for i in range(n)
+    ]
+    domains = [
+        f"{{ [j{i}]: 0<=j{i}<10 }}"
+        for i in range(n)
+    ]
+    t_unit = lp.make_kernel(domains, insns)
+    t_unit = lp.preprocess_kernel(t_unit)
+    lp.get_one_linearized_kernel(t_unit.default_entrypoint, t_unit.callables_table)
 
 
 if __name__ == "__main__":

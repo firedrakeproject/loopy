@@ -252,7 +252,7 @@ def add_prefetch_for_single_kernel(kernel, callables_table, var_name,
                     footprint_subscripts, var_descr)
 
     # Our _not_provided is actually a different object from the one in the
-    # precompute module, but precompute acutally uses that to adjust its
+    # precompute module, but precompute actually uses that to adjust its
     # warning message.
 
     from loopy.transform.precompute import precompute_for_single_kernel
@@ -292,7 +292,13 @@ def add_prefetch_for_single_kernel(kernel, callables_table, var_name,
         return new_kernel
 
 
-def add_prefetch(program, *args, **kwargs):
+def add_prefetch(t_unit,
+                 var_name, sweep_inames=None, dim_arg_names=None,
+                 default_tag=None,
+                 rule_name=None, temporary_name=None,
+                 temporary_address_space=None, temporary_scope=None,
+                 footprint_subscripts=None, fetch_bounding_box=False,
+                 fetch_outer_inames=None, prefetch_insn_id=None, within=None):
     """Prefetch all accesses to the variable *var_name*, with all accesses
     being swept through *sweep_inames*.
 
@@ -379,7 +385,7 @@ def add_prefetch(program, *args, **kwargs):
     :arg fetch_outer_inames: The inames within which the fetch
         instruction is nested. If *None*, make an educated guess.
 
-    :arg fetch_insn_id: The ID of the instruction generated to perform the
+    :arg prefetch_insn_id: The ID of the instruction generated to perform the
         prefetch.
 
     :arg within: a stack match as understood by
@@ -388,14 +394,26 @@ def add_prefetch(program, *args, **kwargs):
 
     This function internally uses :func:`extract_subst` and :func:`precompute`.
     """
-    assert isinstance(program, TranslationUnit)
+    assert isinstance(t_unit, TranslationUnit)
 
     new_callables = {}
-    for func_id, in_knl_callable in program.callables_table.items():
+    for func_id, in_knl_callable in t_unit.callables_table.items():
         if isinstance(in_knl_callable, CallableKernel):
             new_subkernel = add_prefetch_for_single_kernel(
-                    in_knl_callable.subkernel, program.callables_table,
-                    *args, **kwargs)
+                    in_knl_callable.subkernel, t_unit.callables_table,
+                    var_name=var_name,
+                    sweep_inames=sweep_inames,
+                    dim_arg_names=dim_arg_names,
+                    default_tag=default_tag,
+                    rule_name=rule_name,
+                    temporary_name=temporary_name,
+                    temporary_address_space=temporary_address_space,
+                    temporary_scope=temporary_scope,
+                    footprint_subscripts=footprint_subscripts,
+                    fetch_bounding_box=fetch_bounding_box,
+                    fetch_outer_inames=fetch_outer_inames,
+                    prefetch_insn_id=prefetch_insn_id,
+                    within=within)
             in_knl_callable = in_knl_callable.copy(
                     subkernel=new_subkernel)
 
@@ -407,7 +425,7 @@ def add_prefetch(program, *args, **kwargs):
 
         new_callables[func_id] = in_knl_callable
 
-    return program.copy(callables_table=Map(new_callables))
+    return t_unit.copy(callables_table=Map(new_callables))
 
 # }}}
 
@@ -653,7 +671,7 @@ def set_argument_order(kernel, arg_names):
     :arg arg_names: A list (or comma-separated string) or argument
         names. All arguments must be in this list.
     """
-    # FIXME: @inducer -- shoulld this only affect the root kernel, or should it
+    # FIXME: @inducer -- should this only affect the root kernel, or should it
     # take a within?
 
     if isinstance(arg_names, str):
@@ -1007,6 +1025,11 @@ def allocate_temporaries_for_base_storage(kernel: LoopKernel,
             raise LoopyError(
                     f"Temporary '{tv.name}' has an offset and no base_storage. "
                     "That's not allowed.")
+        if not isinstance(tv.dtype, LoopyType):
+            raise LoopyError(
+                f"Dtype of temporary '{tv.name}' "
+                " is not inferred. Call lp.infer_unknown_types"
+                " first.")
 
         if (tv.base_storage
                 and tv.base_storage not in kernel.temporary_variables

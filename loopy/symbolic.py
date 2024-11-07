@@ -1,5 +1,7 @@
 """Pymbolic mappers for loopy."""
 
+from __future__ import annotations
+
 
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
@@ -27,12 +29,21 @@ THE SOFTWARE.
 import re
 from functools import cached_property, reduce
 from sys import intern
-from typing import AbstractSet, ClassVar, Mapping, Sequence, Tuple
+from typing import (
+    TYPE_CHECKING,
+    AbstractSet,
+    Any,
+    ClassVar,
+    Mapping,
+    Sequence,
+    Tuple,
+)
 
 import immutables
 import numpy as np
 
 import islpy as isl
+import pymbolic.primitives  # FIXME: also import by full name to allow sphinx to resolve
 import pymbolic.primitives as p
 import pytools.lex
 from islpy import dim_type
@@ -51,6 +62,7 @@ from pymbolic.mapper.constant_folder import (
 )
 from pymbolic.mapper.dependency import CachedDependencyMapper as DependencyMapperBase
 from pymbolic.mapper.evaluator import CachedEvaluationMapper as EvaluationMapperBase
+from pymbolic.mapper.flattener import FlattenMapper as FlattenMapperBase
 from pymbolic.mapper.stringifier import StringifyMapper as StringifyMapperBase
 from pymbolic.mapper.substitutor import (
     CachedSubstitutionMapper as SubstitutionMapperBase,
@@ -58,19 +70,22 @@ from pymbolic.mapper.substitutor import (
 from pymbolic.mapper.unifier import UnidirectionalUnifier as UnidirectionalUnifierBase
 from pymbolic.parser import Parser as ParserBase
 from pytools import ImmutableRecord, memoize, memoize_method, memoize_on_first_arg
-from pytools.tag import Taggable
+from pytools.tag import Tag, Taggable
 
 from loopy.diagnostic import (
     ExpressionToAffineConversionError,
     LoopyError,
     UnableToDetermineAccessRangeError,
 )
+from loopy.types import ToLoopyTypeConvertible
 from loopy.typing import ExpressionT
 
 
-__doc__ = """
-.. currentmodule:: loopy.symbolic
+if TYPE_CHECKING:
+    from loopy.library.reduction import ReductionOperation
 
+
+__doc__ = """
 Loopy-specific expression types
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -82,6 +97,8 @@ Loopy-specific expression types
 
 .. autoclass:: TypedCSE
 
+.. currentmodule:: loopy
+
 .. autoclass:: TypeCast
 
 .. autoclass:: TaggedVariable
@@ -89,6 +106,8 @@ Loopy-specific expression types
 .. autoclass:: Reduction
 
 .. autoclass:: LinearSubscript
+
+.. currentmodule:: loopy.symbolic
 
 .. autoclass:: RuleArgument
 
@@ -183,6 +202,14 @@ class IdentityMapperMixin:
     map_rule_argument = map_group_hw_index
 
     map_fortran_division = IdentityMapperBase.map_quotient
+
+
+class FlattenMapper(FlattenMapperBase, IdentityMapperMixin):
+    pass
+
+
+def flatten(expr):
+    return FlattenMapper()(expr)
 
 
 class IdentityMapper(IdentityMapperBase, IdentityMapperMixin):
@@ -640,8 +667,9 @@ class TypeCast(LoopyExpressionBase):
 
         The expression to be cast.
     """
+    child: ExpressionT
 
-    def __init__(self, type, child):
+    def __init__(self, type: ToLoopyTypeConvertible, child: ExpressionT):
         super().__init__()
 
         from loopy.types import NumpyType, to_loopy_type
@@ -678,19 +706,21 @@ class TaggedVariable(LoopyExpressionBase, p.Variable, Taggable):
     may then be used to address these uses--such as by prefetching only
     accesses tagged a certain way.
 
-    .. attribute:: tags
-
-        A :class:`frozenset` of subclasses of :class:`pytools.tag.Tag` used to
-        provide metadata on this object. Legacy string tags are converted to
-        :class:`~loopy.LegacyStringInstructionTag` or, if they used to carry
-        a functional meaning, the tag carrying that same fucntional meaning
-        (e.g. :class:`~loopy.UseStreamingStoreTag`).
+    .. autoattribute:: tags
 
     Inherits from :class:`pymbolic.primitives.Variable`
     and :class:`pytools.tag.Taggable`.
     """
 
     init_arg_names = ("name", "tags")
+
+    tags: frozenset[Tag]
+    """A :class:`frozenset` of subclasses of :class:`pytools.tag.Tag` used to
+    provide metadata on this object. Legacy string tags are converted to
+    :class:`~loopy.LegacyStringInstructionTag` or, if they used to carry
+    a functional meaning, the tag carrying that same functional meaning
+    (e.g. :class:`~loopy.UseStreamingStoreTag`).
+    """
 
     def __init__(self, name, tags):
         p.Variable.__init__(self, name)
@@ -718,31 +748,42 @@ class Reduction(LoopyExpressionBase):
     """
     Represents a reduction operation on :attr:`expr` across :attr:`inames`.
 
-    .. attribute:: operation
-        an instance of :class:`loopy.library.reduction.ReductionOperation`
-
-    .. attribute:: inames
-
-        a list of inames across which reduction on :attr:`expr` is being
-        carried out.
-
-    .. attribute:: expr
-
-        An expression which may have tuple type. If the expression has tuple
-        type, it must be one of the following:
-        * a :class:`tuple` of :class:`pymbolic.primitives.Expression`, or
-        * a :class:`loopy.symbolic.Reduction`, or
-        * a function call or substitution rule invocation.
-
-    .. attribute:: allow_simultaneous
-
-        A :class:`bool`. If not *True*, an iname is allowed to be used
-        in precisely one reduction, to avoid mis-nesting errors.
+    .. autoattribute:: operation
+    .. autoattribute:: inames
+    .. autoattribute:: expr
+    .. autoattribute:: allow_simultaneous
     """
 
     init_arg_names = ("operation", "inames", "expr", "allow_simultaneous")
 
-    def __init__(self, operation, inames, expr, allow_simultaneous=False):
+    operation: ReductionOperation
+
+    inames: Sequence[str]
+    """The inames across which reduction on :attr:`expr` is being
+    carried out.
+    """
+
+    expr: ExpressionT
+    """An expression which may have tuple type. If the expression has tuple
+    type, it must be one of the following:
+
+    * a :class:`tuple` of :class:`pymbolic.primitives.Expression`, or
+    * a :class:`loopy.symbolic.Reduction`, or
+    * a function call or substitution rule invocation.
+    """
+
+    allow_simultaneous: bool
+    """If not *True*, an iname is allowed to be used
+    in precisely one reduction, to avoid misnesting errors.
+    """
+
+    def __init__(self,
+                 operation: ReductionOperation | str,
+                 inames: (tuple[str | pymbolic.primitives.Variable, ...]
+                     | pymbolic.primitives.Variable | str),
+                 expr: ExpressionT,
+                 allow_simultaneous: bool = False
+             ) -> None:
         if isinstance(inames, str):
             inames = tuple(iname.strip() for iname in inames.split(","))
 
@@ -751,7 +792,7 @@ class Reduction(LoopyExpressionBase):
 
         assert isinstance(inames, tuple)
 
-        def strip_var(iname):
+        def strip_var(iname: Any) -> str:
             if isinstance(iname, p.Variable):
                 iname = iname.name
 
@@ -968,10 +1009,14 @@ class SubArrayRef(LoopyExpressionBase):
 
     .. automethod:: is_equal
     """
+    swept_inames: tuple[p.Variable, ...]
+    subscript: p.Subscript
 
     init_arg_names = ("swept_inames", "subscript")
 
-    def __init__(self, swept_inames, subscript):
+    def __init__(self,
+                  swept_inames: tuple[p.Variable, ...] | p.Variable,
+                  subscript: p.Subscript) -> None:
 
         # {{{ sanity checks
 
@@ -1787,7 +1832,7 @@ class ArrayAccessFinder(CombineMapper):
 
 # {{{ (pw)aff to expr conversion
 
-def aff_to_expr(aff):
+def aff_to_expr(aff: isl.Aff) -> ExpressionT:
     from pymbolic import var
 
     denom = aff.get_denominator_val().to_python()
@@ -1805,10 +1850,10 @@ def aff_to_expr(aff):
         if coeff:
             result += coeff*aff_to_expr(aff.get_div(i))
 
-    return result // denom
+    return flatten(result // denom)
 
 
-def pw_aff_to_expr(pw_aff, int_ok=False):
+def pw_aff_to_expr(pw_aff: isl.PwAff, int_ok: bool = False) -> ExpressionT:
     if isinstance(pw_aff, int):
         if not int_ok:
             from warnings import warn
@@ -1830,7 +1875,7 @@ def pw_aff_to_expr(pw_aff, int_ok=False):
     return expr
 
 
-def pw_aff_to_pw_aff_implemented_by_expr(pw_aff):
+def pw_aff_to_pw_aff_implemented_by_expr(pw_aff: isl.PwAff) -> isl.PwAff:
     pieces = pw_aff.get_pieces()
 
     rest = isl.Set.universe(pw_aff.space.params())
@@ -1923,7 +1968,7 @@ class PwAffEvaluationMapper(EvaluationMapperBase, IdentityMapperMixin):
                 "for as-pwaff evaluation")
 
 
-def aff_from_expr(space, expr, vars_to_zero=None):
+def aff_from_expr(space: isl.Space, expr: ExpressionT, vars_to_zero=None) -> isl.Aff:
     if vars_to_zero is None:
         vars_to_zero = frozenset()
 
@@ -2090,7 +2135,8 @@ def simplify_using_aff(kernel, expr):
     try:
         aff = guarded_aff_from_expr(domain.space, expr)
     except ExpressionToAffineConversionError:
-        return expr
+        # Accomplish at least *some* simplification
+        return flatten(expr)
 
     # FIXME: Deal with assumptions, too.
     aff = aff.gist(domain)
@@ -2150,13 +2196,16 @@ def qpolynomial_to_expr(qpoly):
     assert all(isinstance(num, int) for num in numerators)
     assert isinstance(common_denominator, int)
 
+    # FIXME: Delete if in favor of the general case once we depend on pymbolic 2024.1.
     if common_denominator == 1:
-        return sum(num * monomial
+        res = sum(num * monomial
                    for num, monomial in zip(numerators, monomials))
     else:
-        return FloorDiv(sum(num * monomial
+        res = FloorDiv(sum(num * monomial
                             for num, monomial in zip(numerators, monomials)),
                         common_denominator)
+
+    return flatten(res)
 
 # }}}
 
