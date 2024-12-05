@@ -25,7 +25,7 @@ import logging
 import os
 import tempfile
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, ClassVar, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from codepy.jit import compile_from_string
@@ -48,7 +48,7 @@ from loopy.target.execution import (
 )
 from loopy.translation_unit import TranslationUnit
 from loopy.types import LoopyType
-from loopy.typing import ExpressionT
+from loopy.typing import Expression
 
 
 logger = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ class CExecutionWrapperGenerator(ExecutionWrapperGeneratorBase):
 
     def handle_alloc(
             self, gen: CodeGenerator, arg: ArrayArg,
-            strify: Callable[[Union[ExpressionT, Tuple[ExpressionT]]], str],
+            strify: Callable[[Union[Expression, Tuple[Expression]]], str],
             skip_arg_checks: bool) -> None:
         """
         Handle allocation of non-specified arguments for C-execution
@@ -324,7 +324,7 @@ class CCompiler:
         c_fname = self._tempname("code." + self.source_suffix)
 
         # build object
-        _, mod_name, ext_file, recompiled = \
+        _, _mod_name, ext_file, recompiled = \
             compile_from_string(
                 self.toolchain.copy(
                     cflags=self.toolchain.cflags+list(extra_build_options)),
@@ -365,15 +365,15 @@ class CPlusPlusCompiler(CCompiler):
 # {{{ placeholder till ctypes fixes: https://github.com/python/cpython/issues/61103
 
 class Complex64(ctypes.Structure):
-    _fields_ = [("real", ctypes.c_float), ("imag", ctypes.c_float)]
+    _fields_: ClassVar = [("real", ctypes.c_float), ("imag", ctypes.c_float)]
 
 
 class Complex128(ctypes.Structure):
-    _fields_ = [("real", ctypes.c_double), ("imag", ctypes.c_double)]
+    _fields_: ClassVar = [("real", ctypes.c_double), ("imag", ctypes.c_double)]
 
 
 class Complex256(ctypes.Structure):
-    _fields_ = [("real", ctypes.c_longdouble), ("imag", ctypes.c_longdouble)]
+    _fields_: ClassVar = [("real", ctypes.c_longdouble), ("imag", ctypes.c_longdouble)]
 
 
 _NUMPY_COMPLEX_TYPE_TO_CTYPE = {

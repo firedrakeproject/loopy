@@ -68,7 +68,7 @@ from loopy.translation_unit import TranslationUnit, for_each_kernel
 
 # for the benefit of loopy.statistics, for now
 from loopy.type_inference import infer_unknown_types
-from loopy.typing import ExpressionT
+from loopy.typing import Expression
 
 
 # {{{ check for writes to predicates
@@ -174,14 +174,14 @@ def make_arrays_for_sep_arrays(kernel: LoopKernel) -> LoopKernel:
         sep_axis_indices_set = frozenset(sep_axis_indices)
 
         assert isinstance(arg.shape, tuple)
-        new_shape: Optional[Tuple[ExpressionT, ...]] = \
+        new_shape: Optional[Tuple[Expression, ...]] = \
                 _remove_at_indices(sep_axis_indices_set, arg.shape)
         new_dim_tags: Optional[Tuple[ArrayDimImplementationTag, ...]] = \
                 _remove_at_indices(sep_axis_indices_set, arg.dim_tags)
         new_dim_names: Optional[Tuple[Optional[str], ...]] = \
                 _remove_at_indices(sep_axis_indices_set, arg.dim_names)
 
-        sep_shape: List[ExpressionT] = [arg.shape[i] for i in sep_axis_indices]
+        sep_shape: List[Expression] = [arg.shape[i] for i in sep_axis_indices]
         for i, sep_shape_i in enumerate(sep_shape):
             if not isinstance(sep_shape_i, (int, np.integer)):
                 raise LoopyError(
@@ -224,7 +224,7 @@ def make_args_for_offsets_and_strides(kernel: LoopKernel) -> LoopKernel:
 
     vng = kernel.get_var_name_generator()
 
-    from pymbolic.primitives import Expression, Variable
+    from pymbolic.primitives import ExpressionNode, Variable
 
     from loopy.kernel.array import FixedStrideArrayDimTag
 
@@ -241,7 +241,7 @@ def make_args_for_offsets_and_strides(kernel: LoopKernel) -> LoopKernel:
                 additional_args.append(ValueArg(
                         offset_name, kernel.index_dtype))
                 arg = arg.copy(offset=offset_name)
-            elif isinstance(arg.offset, (int, np.integer, Expression, str)):
+            elif isinstance(arg.offset, (int, np.integer, ExpressionNode, str)):
                 pass
             else:
                 raise LoopyError(f"invalid value of {what}")
@@ -261,12 +261,12 @@ def make_args_for_offsets_and_strides(kernel: LoopKernel) -> LoopKernel:
                             additional_args.append(ValueArg(
                                     stride_name, kernel.index_dtype))
                         elif isinstance(
-                                dim_tag.stride, (int, np.integer, Expression)):
+                                dim_tag.stride, (int, np.integer, ExpressionNode)):
                             pass
                         else:
                             raise LoopyError(f"invalid value of {what}")
 
-                    new_dim_tags = new_dim_tags + (dim_tag,)
+                    new_dim_tags = (*new_dim_tags, dim_tag)
 
             arg = arg.copy(dim_tags=new_dim_tags)
 
@@ -286,7 +286,7 @@ def make_args_for_offsets_and_strides(kernel: LoopKernel) -> LoopKernel:
 
 def zero_offsets_and_strides(kernel: LoopKernel) -> LoopKernel:
     made_changes = False
-    from pymbolic.primitives import Expression
+    from pymbolic.primitives import ExpressionNode
 
     # {{{ process arguments
 
@@ -298,7 +298,7 @@ def zero_offsets_and_strides(kernel: LoopKernel) -> LoopKernel:
             if arg.offset is auto:
                 made_changes = True
                 arg = arg.copy(offset=0)
-            elif isinstance(arg.offset, (int, np.integer, Expression, str)):
+            elif isinstance(arg.offset, (int, np.integer, ExpressionNode, str)):
                 from pymbolic.primitives import is_zero
                 if not is_zero(arg.offset):
                     raise LoopyError(
@@ -499,7 +499,7 @@ def check_atomic_loads(kernel):
                 for x in missed:
                     if {x} & atomicity_candidates:
                         insn = insn.copy(
-                            atomicity=insn.atomicity + (AtomicLoad(x),))
+                            atomicity=(*insn.atomicity, AtomicLoad(x)))
 
         new_insns.append(insn)
 
@@ -697,7 +697,7 @@ def infer_arg_descr(t_unit: TranslationUnit) -> TranslationUnit:
                 raise NotImplementedError()
         new_callable, clbl_inf_ctx = t_unit.callables_table[e].with_descrs(
                 arg_id_to_descr, clbl_inf_ctx)
-        clbl_inf_ctx, new_name = clbl_inf_ctx.with_callable(e, new_callable,
+        clbl_inf_ctx, _new_name = clbl_inf_ctx.with_callable(e, new_callable,
                                                             is_entrypoint=True)
 
     return clbl_inf_ctx.finish_program(t_unit)

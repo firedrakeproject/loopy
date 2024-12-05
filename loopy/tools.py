@@ -136,8 +136,8 @@ class LoopyEqKeyBuilder:
         kb = LoopyKeyBuilder()
         # Build the key. For faster hashing, avoid hashing field names.
         key = (
-            (self.class_.__name__.encode("utf-8"),) +
-            tuple(self.field_dict[k] for k in sorted(self.field_dict.keys())))
+            (self.class_.__name__.encode("utf-8"),
+                *(self.field_dict[k] for k in sorted(self.field_dict.keys()))))
 
         return kb(key)
 
@@ -242,25 +242,14 @@ def build_ispc_shared_lib(
 
     from subprocess import check_call
 
-    ispc_cmd = ([ispc_bin,
-                "--pic",
-                "-o", "ispc.o"]
-            + ispc_options
-            + list(ispc_source_names))
+    ispc_cmd = ([ispc_bin, "--pic", "-o", "ispc.o", *ispc_options, *ispc_source_names])
     if not quiet:
         print(" ".join(ispc_cmd))
 
     check_call(ispc_cmd, cwd=cwd)
 
-    cxx_cmd = ([
-                cxx_bin,
-                "-shared", "-Wl,--export-dynamic",
-                "-fPIC",
-                "-oshared.so",
-                "ispc.o",
-                ]
-            + cxx_options
-            + list(cxx_source_names))
+    cxx_cmd = ([cxx_bin, "-shared", "-Wl,--export-dynamic", "-fPIC", "-oshared.so",
+        "ispc.o", *cxx_options, *cxx_source_names])
 
     check_call(cxx_cmd, cwd=cwd)
 
@@ -279,7 +268,7 @@ def address_from_numpy(obj):
     if ary_intf is None:
         raise RuntimeError("no array interface")
 
-    buf_base, is_read_only = ary_intf["data"]
+    buf_base, _is_read_only = ary_intf["data"]
     return buf_base + ary_intf.get("offset", 0)
 
 
@@ -348,6 +337,9 @@ class _PickledObject:
     def __getstate__(self):
         return {"objstring": self.objstring}
 
+    def __repr__(self) -> str:
+        return type(self).__name__ + "(" + repr(self.unpickle()) + ")"
+
 
 class _PickledObjectWithEqAndPersistentHashKeys(_PickledObject):
     """Like :class:`_PickledObject`, with two additional attributes:
@@ -406,6 +398,9 @@ class LazilyUnpicklingDict(abc.MutableMapping):
             key: _PickledObject(val)
             for key, val in self._map.items()}}
 
+    def __repr__(self) -> str:
+        return type(self).__name__ + "(" + repr(self._map) + ")"
+
 # }}}
 
 
@@ -443,6 +438,9 @@ class LazilyUnpicklingList(abc.MutableSequence):
 
     def __mul__(self, other):
         return self._list * other
+
+    def __repr__(self) -> str:
+        return type(self).__name__ + "(" + repr(self._list) + ")"
 
 
 class LazilyUnpicklingListWithEqAndPersistentHashing(LazilyUnpicklingList):
@@ -526,7 +524,7 @@ class Optional:
         The value, if present.
     """
 
-    __slots__ = ("has_value", "_value")
+    __slots__ = ("_value", "has_value")
 
     def __init__(self, value=_no_value):
         self.has_value = value is not _no_value
@@ -819,7 +817,7 @@ def t_unit_to_python(t_unit, var_name="t_unit",
         "from pymbolic.primitives import *",
         "import immutables",
         ])
-    body_str = "\n".join(knl_python_code_srcs + ["\n", merge_stmt])
+    body_str = "\n".join([*knl_python_code_srcs, "\n", merge_stmt])
 
     python_code = "\n".join([preamble_str, "\n", body_str])
     assert _is_generated_t_unit_the_same(python_code, var_name, t_unit)

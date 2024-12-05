@@ -24,11 +24,11 @@ import logging
 import sys
 
 import numpy as np
-import pytest  # noqa
+import pytest
 
 import pyopencl as cl
-import pyopencl.clmath  # noqa
-import pyopencl.clrandom  # noqa
+import pyopencl.clmath
+import pyopencl.clrandom
 
 import loopy as lp
 
@@ -268,7 +268,7 @@ def test_independent_multi_domain(ctx_factory):
     assert knl["loopy_kernel"].parents_per_domain() == 2*[None]
 
     n = 50
-    evt, (a, b) = knl(queue, n=n, out_host=True)
+    _evt, (a, b) = knl(queue, n=n, out_host=True)
 
     assert a.shape == (50,)
     assert b.shape == (50,)

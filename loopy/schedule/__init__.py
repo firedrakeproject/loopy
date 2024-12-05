@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from loopy.kernel.function_interface import InKernelCallable
+from loopy.translation_unit import FunctionIdT
 from loopy.typing import not_none
 
 
@@ -27,20 +29,11 @@ THE SOFTWARE.
 
 import logging
 import sys
+from collections.abc import Hashable, Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass, replace
 from typing import (
     TYPE_CHECKING,
-    AbstractSet,
     Any,
-    Dict,
-    FrozenSet,
-    Hashable,
-    Iterator,
-    Mapping,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
     TypeVar,
 )
 
@@ -155,7 +148,7 @@ class Barrier(ScheduleItem):
 
 def gather_schedule_block(
         schedule: Sequence[ScheduleItem], start_idx: int
-        ) -> Tuple[Sequence[ScheduleItem], int]:
+        ) -> tuple[Sequence[ScheduleItem], int]:
     assert isinstance(schedule[start_idx], BeginBlockItem)
     level = 0
 
@@ -176,7 +169,7 @@ def gather_schedule_block(
 
 def generate_sub_sched_items(
         schedule: Sequence[ScheduleItem], start_idx: int
-        ) -> Iterator[Tuple[int, ScheduleItem]]:
+        ) -> Iterator[tuple[int, ScheduleItem]]:
     if not isinstance(schedule[start_idx], BeginBlockItem):
         yield start_idx, schedule[start_idx]
 
@@ -203,7 +196,7 @@ def generate_sub_sched_items(
 
 def get_insn_ids_for_block_at(
         schedule: Sequence[ScheduleItem], start_idx: int
-        ) -> FrozenSet[str]:
+        ) -> frozenset[str]:
     return frozenset(
             sub_sched_item.insn_id
             for i, sub_sched_item in generate_sub_sched_items(
@@ -212,7 +205,7 @@ def get_insn_ids_for_block_at(
 
 
 def find_used_inames_within(
-        kernel: LoopKernel, sched_index: int) -> AbstractSet[str]:
+        kernel: LoopKernel, sched_index: int) -> set[str]:
     assert kernel.linearization is not None
     sched_item = kernel.linearization[sched_index]
 
@@ -234,7 +227,7 @@ def find_used_inames_within(
     return result
 
 
-def find_loop_nest_with_map(kernel: LoopKernel) -> Mapping[str, AbstractSet[str]]:
+def find_loop_nest_with_map(kernel: LoopKernel) -> Mapping[str, set[str]]:
     """Returns a dictionary mapping inames to other inames that are
     always nested with them.
     """
@@ -257,11 +250,11 @@ def find_loop_nest_with_map(kernel: LoopKernel) -> Mapping[str, AbstractSet[str]
     return result
 
 
-def find_loop_nest_around_map(kernel: LoopKernel) -> Mapping[str, AbstractSet[str]]:
+def find_loop_nest_around_map(kernel: LoopKernel) -> Mapping[str, set[str]]:
     """Returns a dictionary mapping inames to other inames that are
     always nested around them.
     """
-    result: Dict[str, Set[str]] = {}
+    result: dict[str, set[str]] = {}
 
     all_inames = kernel.all_inames()
 
@@ -299,14 +292,14 @@ def find_loop_nest_around_map(kernel: LoopKernel) -> Mapping[str, AbstractSet[st
 
 def find_loop_insn_dep_map(
         kernel: LoopKernel,
-        loop_nest_with_map: Mapping[str, AbstractSet[str]],
-        loop_nest_around_map: Mapping[str, AbstractSet[str]]
-        ) -> Mapping[str, AbstractSet[str]]:
+        loop_nest_with_map: Mapping[str, Set[str]],
+        loop_nest_around_map: Mapping[str, Set[str]]
+        ) -> Mapping[str, set[str]]:
     """Returns a dictionary mapping inames to other instruction ids that need to
     be scheduled before the iname should be eligible for scheduling.
     """
 
-    result: Dict[str, Set[str]] = {}
+    result: dict[str, set[str]] = {}
 
     from loopy.kernel.data import ConcurrentTag, IlpBaseTag
     for insn in kernel.instructions:
@@ -372,7 +365,7 @@ def find_loop_insn_dep_map(
 
 
 def group_insn_counts(kernel: LoopKernel) -> Mapping[str, int]:
-    result: Dict[str, int] = {}
+    result: dict[str, int] = {}
 
     for insn in kernel.instructions:
         for grp in insn.groups:
@@ -382,7 +375,7 @@ def group_insn_counts(kernel: LoopKernel) -> Mapping[str, int]:
 
 
 def gen_dependencies_except(
-        kernel: LoopKernel, insn_id: str, except_insn_ids: AbstractSet[str]
+        kernel: LoopKernel, insn_id: str, except_insn_ids: Set[str]
         ) -> Iterator[str]:
     insn = kernel.id_to_insn[insn_id]
     for dep_id in insn.depends_on:
@@ -396,9 +389,9 @@ def gen_dependencies_except(
 
 
 def get_priority_tiers(
-        wanted: AbstractSet[int],
-        priorities: AbstractSet[Sequence[int]]
-        ) -> Iterator[AbstractSet[int]]:
+        wanted: Set[int],
+        priorities: Set[Sequence[int]]
+        ) -> Iterator[set[int]]:
     # Get highest priority tier candidates: These are the first inames
     # of all the given priority constraints
     candidates = set()
@@ -677,24 +670,24 @@ class SchedulerState:
         order with instruction priorities as tie breaker.
     """
     kernel: LoopKernel
-    loop_nest_around_map: Mapping[str, AbstractSet[str]]
-    loop_insn_dep_map: Mapping[str, AbstractSet[str]]
+    loop_nest_around_map: Mapping[str, set[str]]
+    loop_insn_dep_map: Mapping[str, set[str]]
 
-    breakable_inames: AbstractSet[str]
-    ilp_inames: AbstractSet[str]
-    vec_inames: AbstractSet[str]
-    concurrent_inames: AbstractSet[str]
+    breakable_inames: set[str]
+    ilp_inames: set[str]
+    vec_inames: set[str]
+    concurrent_inames: set[str]
 
-    insn_ids_to_try: Optional[AbstractSet[str]]
+    insn_ids_to_try: set[str] | None
     active_inames: Sequence[str]
-    entered_inames: FrozenSet[str]
-    enclosing_subkernel_inames: Tuple[str, ...]
+    entered_inames: frozenset[str]
+    enclosing_subkernel_inames: tuple[str, ...]
     schedule: Sequence[ScheduleItem]
-    scheduled_insn_ids: AbstractSet[str]
-    unscheduled_insn_ids: AbstractSet[str]
+    scheduled_insn_ids: frozenset[str]
+    unscheduled_insn_ids: set[str]
     preschedule: Sequence[ScheduleItem]
-    prescheduled_insn_ids: AbstractSet[str]
-    prescheduled_inames: AbstractSet[str]
+    prescheduled_insn_ids: set[str]
+    prescheduled_inames: set[str]
     may_schedule_global_barriers: bool
     within_subkernel: bool
     group_insn_counts: Mapping[str, int]
@@ -702,7 +695,7 @@ class SchedulerState:
     insns_in_topologically_sorted_order: Sequence[InstructionBase]
 
     @property
-    def last_entered_loop(self) -> Optional[str]:
+    def last_entered_loop(self) -> str | None:
         if self.active_inames:
             return self.active_inames[-1]
         else:
@@ -718,7 +711,7 @@ def get_insns_in_topologically_sorted_order(
         kernel: LoopKernel) -> Sequence[InstructionBase]:
     from pytools.graph import compute_topological_order
 
-    rev_dep_map: Dict[str, Set[str]] = {
+    rev_dep_map: dict[str, set[str]] = {
             not_none(insn.id): set() for insn in kernel.instructions}
     for insn in kernel.instructions:
         for dep in insn.depends_on:
@@ -733,7 +726,7 @@ def get_insns_in_topologically_sorted_order(
     # Instead of returning these features as a key, we assign an id to
     # each set of features to avoid comparing them which can be expensive.
     insn_id_to_feature_id = {}
-    insn_features: Dict[Hashable, int] = {}
+    insn_features: dict[Hashable, int] = {}
     for insn in kernel.instructions:
         feature = (insn.within_inames, insn.groups, insn.conflicts_with_groups)
         if feature not in insn_features:
@@ -890,7 +883,7 @@ def _get_outermost_diverging_inames(
             tree: LoopTree,
             within1: InameStrSet,
             within2: InameStrSet
-        ) -> Tuple[InameStr, InameStr]:
+        ) -> tuple[InameStr, InameStr]:
     """
     For loop nestings *within1* and *within2*, returns the first inames at which
     the loops nests diverge in the loop nesting tree *tree*.
@@ -932,7 +925,7 @@ def _generate_loop_schedules_v2(kernel: LoopKernel) -> Sequence[ScheduleItem]:
         raise V2SchedulerNotImplementedError("v2 scheduler cannot schedule"
                 " kernels with instruction priorities set.")
 
-    if kernel.schedule is not None:
+    if kernel.linearization is not None:
         # cannot handle preschedule yet
         raise V2SchedulerNotImplementedError("v2 scheduler cannot schedule"
                 " prescheduled kernels.")
@@ -1029,7 +1022,7 @@ def _generate_loop_schedules_v2(kernel: LoopKernel) -> Sequence[ScheduleItem]:
     def iname_key(iname: str) -> str:
         all_ancestors = sorted(loop_tree.ancestors(iname),
                                key=lambda x: loop_tree.depth(x))
-        return ",".join(all_ancestors+[iname])
+        return ",".join([*all_ancestors, iname])
 
     def key(x: ScheduleItem) -> tuple[str, ...]:
         if isinstance(x, RunInstruction):
@@ -1106,7 +1099,7 @@ def _generate_loop_schedules_internal(
         assert sched_state.within_subkernel is False
         yield from _generate_loop_schedules_internal(
                 sched_state.copy(
-                    schedule=sched_state.schedule + (next_preschedule_item,),
+                    schedule=(*sched_state.schedule, next_preschedule_item),
                     preschedule=sched_state.preschedule[1:],
                     within_subkernel=True,
                     may_schedule_global_barriers=False,
@@ -1119,7 +1112,7 @@ def _generate_loop_schedules_internal(
         if sched_state.active_inames == sched_state.enclosing_subkernel_inames:
             yield from _generate_loop_schedules_internal(
                     sched_state.copy(
-                        schedule=sched_state.schedule + (next_preschedule_item,),
+                        schedule=(*sched_state.schedule, next_preschedule_item),
                         preschedule=sched_state.preschedule[1:],
                         within_subkernel=False,
                         may_schedule_global_barriers=True),
@@ -1138,7 +1131,7 @@ def _generate_loop_schedules_internal(
             and next_preschedule_item.originating_insn_id is None):
         yield from _generate_loop_schedules_internal(
                     sched_state.copy(
-                        schedule=sched_state.schedule + (next_preschedule_item,),
+                        schedule=(*sched_state.schedule, next_preschedule_item),
                         preschedule=sched_state.preschedule[1:]),
                     debug=debug)
 
@@ -1298,7 +1291,7 @@ def _generate_loop_schedules_internal(
                     unscheduled_insn_ids=sched_state.unscheduled_insn_ids - iid_set,
                     insn_ids_to_try=new_insn_ids_to_try,
                     schedule=(
-                        sched_state.schedule + (RunInstruction(insn_id=insn.id),)),
+                        (*sched_state.schedule, RunInstruction(insn_id=insn.id))),
                     preschedule=(
                         sched_state.preschedule
                         if insn_id not in sched_state.prescheduled_insn_ids
@@ -1412,8 +1405,8 @@ def _generate_loop_schedules_internal(
                 for sub_sched in _generate_loop_schedules_internal(
                         sched_state.copy(
                             schedule=(
-                                sched_state.schedule
-                                + (LeaveLoop(iname=last_entered_loop),)),
+                                (*sched_state.schedule,
+                                    LeaveLoop(iname=last_entered_loop))),
                             active_inames=sched_state.active_inames[:-1],
                             insn_ids_to_try=insn_ids_to_try,
                             preschedule=(
@@ -1622,10 +1615,9 @@ def _generate_loop_schedules_internal(
                     for sub_sched in _generate_loop_schedules_internal(
                             sched_state.copy(
                                 schedule=(
-                                    sched_state.schedule
-                                    + (EnterLoop(iname=iname),)),
+                                    (*sched_state.schedule, EnterLoop(iname=iname))),
                                 active_inames=(
-                                    sched_state.active_inames + (iname,)),
+                                    (*sched_state.active_inames, iname)),
                                 entered_inames=(
                                     sched_state.entered_inames
                                     | frozenset((iname,))),
@@ -2180,7 +2172,7 @@ class MinRecursionLimitForScheduling(MinRecursionLimit):
 def generate_loop_schedules(
         kernel: LoopKernel,
         callables_table: CallablesTable,
-        debug_args: Optional[Dict[str, Any]] = None) -> Iterator[LoopKernel]:
+        debug_args: Mapping[str, Any] | None = None) -> Iterator[LoopKernel]:
     """
     .. warning::
 
@@ -2236,7 +2228,7 @@ def _postprocess_schedule(kernel, callables_table, gen_sched):
 def _generate_loop_schedules_inner(
         kernel: LoopKernel,
         callables_table: CallablesTable,
-        debug_args: Optional[Dict[str, Any]]) -> Iterator[LoopKernel]:
+        debug_args: Mapping[str, Any] | None) -> Iterator[LoopKernel]:
     if debug_args is None:
         debug_args = {}
 
@@ -2337,7 +2329,7 @@ def _generate_loop_schedules_inner(
                 get_insns_in_topologically_sorted_order(kernel)),
     )
 
-    schedule_gen_kwargs: Dict[str, Any] = {}
+    schedule_gen_kwargs: dict[str, Any] = {}
 
     def print_longest_dead_end():
         if debug.interactive:
@@ -2402,7 +2394,7 @@ def _generate_loop_schedules_inner(
 
 
 schedule_cache: WriteOncePersistentDict[
-        Tuple[LoopKernel, CallablesTable],
+        tuple[LoopKernel, CallablesTable],
         LoopKernel
 ] = WriteOncePersistentDict(
         "loopy-schedule-cache-v4-"+DATA_MODEL_VERSION,
@@ -2455,7 +2447,7 @@ def get_one_linearized_kernel(
                         callables_table)
 
     if CACHING_ENABLED and not from_cache:
-        schedule_cache.store_if_not_present(sched_cache_key, result)  # pylint: disable=possibly-used-before-assignment  # noqa: E501
+        schedule_cache.store_if_not_present(sched_cache_key, result)  # pylint: disable=possibly-used-before-assignment
 
     return result
 
@@ -2475,7 +2467,7 @@ def linearize(t_unit: TranslationUnit) -> TranslationUnit:
 
     pre_schedule_checks(t_unit)
 
-    new_callables = {}
+    new_callables: dict[FunctionIdT, InKernelCallable] = {}
 
     for name, clbl in t_unit.callables_table.items():
         if isinstance(clbl, CallableKernel):
