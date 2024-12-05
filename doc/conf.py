@@ -2,7 +2,7 @@ import os
 from urllib.request import urlopen
 
 
-_conf_url = "https://raw.githubusercontent.com/inducer/sphinxconfig/main/sphinxconfig.py"  # noqa
+_conf_url = "https://raw.githubusercontent.com/inducer/sphinxconfig/main/sphinxconfig.py"
 with urlopen(_conf_url) as _inf:
     exec(compile(_inf.read(), _conf_url, "exec"), globals())
 
@@ -62,7 +62,7 @@ nitpick_ignore_regex = [
         ["py:class", r"immutables\.(.+)"],
 
         # Reference not found from "<unknown>"? I'm not even sure where to look.
-        ["py:class", r"Expression"],
+        ["py:class", r"ExpressionNode"],
         ]
 
 autodoc_type_aliases = {

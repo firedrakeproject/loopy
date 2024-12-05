@@ -28,7 +28,7 @@ import numpy as np
 from immutables import Map
 
 import islpy as isl
-from pymbolic import ArithmeticExpressionT, var
+from pymbolic import ArithmeticExpression, var
 from pymbolic.mapper.substitutor import make_subst_func
 from pytools import memoize_on_first_arg
 from pytools.tag import Tag
@@ -60,7 +60,7 @@ from loopy.transform.array_buffer_map import (
 from loopy.translation_unit import CallablesTable, TranslationUnit
 from loopy.types import LoopyType, ToLoopyTypeConvertible, to_loopy_type
 from loopy.typing import (
-    ExpressionT,
+    Expression,
     auto,
     integer_expr_or_err,
     integer_or_err,
@@ -101,9 +101,9 @@ def _get_called_names(insn):
     assert isinstance(insn, MultiAssignmentBase)
     from functools import reduce
 
-    from pymbolic.primitives import Expression
+    from pymbolic.primitives import ExpressionNode
     return ((_get_calls_in_expr(insn.expression)
-             if isinstance(insn.expression, Expression)
+             if isinstance(insn.expression, ExpressionNode)
              else frozenset())
             # indices of assignees might call the subst rules
             | reduce(frozenset.union,
@@ -113,7 +113,7 @@ def _get_called_names(insn):
             | reduce(frozenset.union,
                      (_get_calls_in_expr(pred)
                       for pred in insn.predicates
-                      if isinstance(pred, Expression)),
+                      if isinstance(pred, ExpressionNode)),
                      frozenset())
             )
 
@@ -133,14 +133,14 @@ def contains_a_subst_rule_invocation(kernel, insn):
 
 @dataclass(frozen=True)
 class RuleAccessDescriptor(AccessDescriptor):
-    args: Optional[Sequence[ArithmeticExpressionT]] = None
+    args: Optional[Sequence[ArithmeticExpression]] = None
 
 
 def access_descriptor_id(args, expansion_stack):
     return (args, expansion_stack)
 
 
-def storage_axis_exprs(storage_axis_sources, args) -> Sequence[ExpressionT]:
+def storage_axis_exprs(storage_axis_sources, args) -> Sequence[Expression]:
     result = []
 
     for saxis_source in storage_axis_sources:
@@ -155,7 +155,8 @@ def storage_axis_exprs(storage_axis_sources, args) -> Sequence[ExpressionT]:
 # {{{ gather rule invocations
 
 class RuleInvocationGatherer(RuleAwareIdentityMapper):
-    def __init__(self, rule_mapping_context, kernel, subst_name, subst_tag, within):
+    def __init__(self, rule_mapping_context, kernel, subst_name, subst_tag, within) \
+            -> None:
         super().__init__(rule_mapping_context)
 
         from loopy.symbolic import SubstitutionRuleExpander
@@ -167,7 +168,7 @@ class RuleInvocationGatherer(RuleAwareIdentityMapper):
         self.subst_tag = subst_tag
         self.within = within
 
-        self.access_descriptors: List[RuleAccessDescriptor] = []
+        self.access_descriptors: list[RuleAccessDescriptor] = []
 
     def map_substitution(self, name, tag, arguments, expn_state):
         process_me = name == self.subst_name
@@ -387,11 +388,11 @@ def precompute_for_single_kernel(
         precompute_outer_inames: Optional[FrozenSet[str]] = None,
         storage_axis_to_tag=None,
 
-        default_tag: Union[None, Tag, str] = None,
+        default_tag: Union[Tag, str, None] = None,
 
         dtype: Optional[ToLoopyTypeConvertible] = None,
         fetch_bounding_box: bool = False,
-        temporary_address_space: Union[AddressSpace, None, Type[auto]] = None,
+        temporary_address_space: Union[AddressSpace, Type[auto], None] = None,
         compute_insn_id: Optional[str] = None,
         _enable_mirgecom_workaround: bool = False,
         ) -> LoopKernel:
@@ -576,9 +577,9 @@ def precompute_for_single_kernel(
 
         for fpg in footprint_generators:
             if isinstance(fpg, Variable):
-                args: tuple[ArithmeticExpressionT, ...] = ()
+                args: tuple[ArithmeticExpression, ...] = ()
             elif isinstance(fpg, Call):
-                args = cast(tuple[ArithmeticExpressionT, ...], fpg.parameters)
+                args = cast(tuple[ArithmeticExpression, ...], fpg.parameters)
             else:
                 raise ValueError("footprint generator must "
                         "be substitution rule invocation")
@@ -921,8 +922,8 @@ def precompute_for_single_kernel(
         # should.
 
         if _enable_mirgecom_workaround:
-            from pymbolic.primitives import Expression
-            if is_length_1 and not isinstance(base_index, Expression):
+            from pymbolic.primitives import ExpressionNode
+            if is_length_1 and not isinstance(base_index, ExpressionNode):
                 # I.e. base_index is an integer.
                 from pytools import is_single_valued
                 if is_single_valued(
@@ -1027,7 +1028,7 @@ def precompute_for_single_kernel(
                 and insn.within_inames & prior_storage_axis_names):
             insn = (insn
                     .with_transformed_expressions(
-                        lambda expr: expr_subst_map(expr, kernel, insn))  # noqa: B023,E501
+                        lambda expr: expr_subst_map(expr, kernel, insn))  # noqa: B023
                     .copy(within_inames=frozenset(
                         new_iname
                         for iname in insn.within_inames

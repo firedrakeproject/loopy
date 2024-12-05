@@ -57,7 +57,7 @@ from loopy.symbolic import CombineMapper
 from loopy.target import TargetBase
 from loopy.tools import LoopyKeyBuilder, caches
 from loopy.types import LoopyType
-from loopy.typing import ExpressionT
+from loopy.typing import Expression
 from loopy.version import DATA_MODEL_VERSION
 
 
@@ -67,8 +67,8 @@ if TYPE_CHECKING:
 
 
 if getattr(sys, "_BUILDING_SPHINX_DOCS", False):
-    from loopy.codegen.result import GeneratedProgram  # noqa: F811
-    from loopy.codegen.tools import CodegenOperationCacheManager  # noqa: F811
+    from loopy.codegen.result import GeneratedProgram
+    from loopy.codegen.tools import CodegenOperationCacheManager
 
 
 __doc__ = """
@@ -90,9 +90,9 @@ __doc__ = """
 
 References
 ^^^^^^^^^^
-.. class:: Expression
+.. class:: ExpressionNode
 
-    See :class:`pymbolic.Expression`.
+    See :class:`pymbolic.primitives.ExpressionNode`.
 """
 
 
@@ -200,14 +200,14 @@ class CodeGenerationState:
     kernel: LoopKernel
     target: TargetBase
     implemented_domain: isl.Set
-    implemented_predicates: FrozenSet[Union[str, ExpressionT]]
+    implemented_predicates: FrozenSet[Union[str, Expression]]
 
     # /!\ mutable
     seen_dtypes: Set[LoopyType]
     seen_functions: Set[SeenFunction]
     seen_atomic_dtypes: Set[LoopyType]
 
-    var_subst_map: Map[str, ExpressionT]
+    var_subst_map: Map[str, Expression]
     allow_complex: bool
     callables_table: CallablesTable
     is_entrypoint: bool
@@ -231,7 +231,7 @@ class CodeGenerationState:
         return replace(self, **kwargs)
 
     def copy_and_assign(
-            self, name: str, value: ExpressionT) -> "CodeGenerationState":
+            self, name: str, value: Expression) -> "CodeGenerationState":
         """Make a copy of self with variable *name* fixed to *value*."""
         return self.copy(var_subst_map=self.var_subst_map.set(name, value))
 
@@ -666,7 +666,7 @@ def generate_code_v2(t_unit: TranslationUnit) -> CodeGenerationResult:
     # adding the callee fdecls to the device_programs
     device_programs = ([device_programs[0].copy(
             ast=t_unit.target.get_device_ast_builder().ast_module.Collection(
-                callee_fdecls+[device_programs[0].ast]))] +
+                [*callee_fdecls, device_programs[0].ast]))] +
             device_programs[1:])
 
     def not_reduction_op(name: str | ReductionOpFunction) -> str:

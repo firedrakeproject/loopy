@@ -31,6 +31,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
+    ClassVar,
     Dict,
     FrozenSet,
     Iterator,
@@ -49,7 +50,7 @@ from immutables import Map
 
 import islpy as isl
 from islpy import dim_type
-from pymbolic import ArithmeticExpressionT
+from pymbolic import ArithmeticExpression
 from pytools import (
     UniqueNameGenerator,
     generate_unique_names,
@@ -75,7 +76,7 @@ from loopy.schedule import ScheduleItem
 from loopy.target import TargetBase
 from loopy.tools import update_persistent_hash
 from loopy.types import LoopyType, NumpyType
-from loopy.typing import ExpressionT, InameStr
+from loopy.typing import Expression, InameStr
 
 
 if TYPE_CHECKING:
@@ -85,7 +86,7 @@ if TYPE_CHECKING:
 
 # {{{ loop kernel object
 
-class KernelState(IntEnum):  # noqa
+class KernelState(IntEnum):
     INITIAL = 0
     CALLS_RESOLVED = 1
     PREPROCESSED = 2
@@ -121,7 +122,7 @@ class LoopKernel(Taggable):
     .. autoattribute:: domains
     .. autoattribute:: instructions
     .. autoattribute:: args
-    .. autoattribute:: schedule
+    .. autoattribute:: linearization
     .. autoattribute:: name
     .. autoattribute:: preambles
     .. autoattribute:: preamble_generators
@@ -193,13 +194,13 @@ class LoopKernel(Taggable):
     with non-parallel implementation tags.
     """
 
-    applied_iname_rewrites: Tuple[Dict[InameStr, ExpressionT], ...] = ()
+    applied_iname_rewrites: Tuple[Dict[InameStr, Expression], ...] = ()
     """
     A list of past substitution dictionaries that
     were applied to the kernel. These are stored so that they may be repeated
     on expressions the user specifies later.
     """
-    index_dtype: NumpyType = NumpyType(np.dtype(np.int32))
+    index_dtype: NumpyType = NumpyType(np.dtype(np.int32))  # noqa: RUF009
     silenced_warnings: FrozenSet[str] = frozenset()
 
     # FIXME Yuck, this should go.
@@ -529,14 +530,6 @@ class LoopKernel(Taggable):
         return self.combine_domains(tuple(sorted(domain_indices)))
 
     # }}}
-
-    @property
-    def schedule(self):
-        warn(
-                "'LoopKernel.schedule' is deprecated and will be removed in 2022. "
-                "Call 'LoopKernel.linearization' instead.",
-                DeprecationWarning, stacklevel=2)
-        return self.linearization
 
     # {{{ iname wrangling
 
@@ -1044,8 +1037,8 @@ class LoopKernel(Taggable):
             self, callables_table,
             ignore_auto=False, return_dict=False
             ) -> Tuple[
-                    Tuple[ArithmeticExpressionT, ...],
-                    Tuple[ArithmeticExpressionT, ...]]:
+                    Tuple[ArithmeticExpression, ...],
+                    Tuple[ArithmeticExpression, ...]]:
         """Return a tuple (global_size, local_size) containing a grid that
         could accommodate execution of *all* instructions in the kernel.
 
@@ -1318,7 +1311,7 @@ class LoopKernel(Taggable):
 
     # {{{ persistent hash key generation / comparison
 
-    hash_fields = [
+    hash_fields: ClassVar[Sequence[str]] = [
             "domains",
             "instructions",
             "args",

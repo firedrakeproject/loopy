@@ -321,7 +321,7 @@ class OpenCLCallable(ScalarCallable):
                         callables_table)
 
             dtype = arg_id_to_dtype[0]
-            scalar_dtype, offset, field_name = dtype.numpy_dtype.fields["s0"]
+            scalar_dtype, _offset, _field_name = dtype.numpy_dtype.fields["s0"]
             return (
                     self.copy(name_in_target=name, arg_id_to_dtype={-1:
                         NumpyType(scalar_dtype), 0: dtype, 1: dtype}),
@@ -618,15 +618,12 @@ class OpenCLCASTBuilder(CFamilyASTBuilder):
 
     def symbol_manglers(self):
         return (
-                super().symbol_manglers() + [
-                    opencl_symbol_mangler
-                    ])
+                [*super().symbol_manglers(), opencl_symbol_mangler])
 
     def preamble_generators(self):
 
         return (
-                super().preamble_generators() + [
-                    opencl_preamble_generator])
+                [*super().preamble_generators(), opencl_preamble_generator])
 
     # }}}
 

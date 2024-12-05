@@ -36,7 +36,7 @@ from loopy.kernel.data import AddressSpace, ImageArg, TemporaryVariable, auto
 from loopy.kernel.function_interface import CallableKernel, ScalarCallable
 from loopy.translation_unit import TranslationUnit, for_each_kernel
 from loopy.types import LoopyType
-from loopy.typing import ExpressionT
+from loopy.typing import Expression
 
 
 # {{{ convenience: add_prefetch
@@ -124,7 +124,7 @@ def _process_footprint_subscripts(kernel, rule_name, sweep_inames,
 
                 kernel = _add_kernel_axis(kernel, axis_name, 0, arg.shape[axis_nr],
                         frozenset(sweep_inames) | fsub_dependencies)
-                sweep_inames = sweep_inames + [axis_name]
+                sweep_inames = [*sweep_inames, axis_name]
 
                 inames_to_be_removed.append(axis_name)
                 new_fsub.append(Variable(axis_name))
@@ -229,10 +229,10 @@ def add_prefetch_for_single_kernel(kernel, callables_table, var_name,
     from pymbolic import var
     uni_template = parsed_var_name
     if len(parameters) > 1:
-        uni_template = uni_template.index(
-                tuple(var(par_name) for par_name in parameters))
+        uni_template = uni_template[
+                tuple(var(par_name) for par_name in parameters)]
     elif len(parameters) == 1:
-        uni_template = uni_template.index(var(parameters[0]))
+        uni_template = uni_template[var(parameters[0])]
 
     # }}}
 
@@ -984,11 +984,11 @@ def add_padding_to_avoid_bank_conflicts(kernel, device):
 @dataclass(frozen=True)
 class _BaseStorageInfo:
     name: str
-    next_offset: ExpressionT
+    next_offset: Expression
     approx_nbytes: Optional[int] = None
 
 
-def _sym_max(a: ExpressionT, b: ExpressionT) -> ExpressionT:
+def _sym_max(a: Expression, b: Expression) -> Expression:
     from numbers import Number
     if isinstance(a, Number) and isinstance(b, Number):
         return max(a, b)

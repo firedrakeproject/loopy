@@ -27,7 +27,17 @@ from collections.abc import (
 from dataclasses import dataclass
 from functools import cached_property
 from sys import intern
-from typing import Any, FrozenSet, Mapping, Optional, Sequence, Tuple, Type, Union
+from typing import (
+    Any,
+    ClassVar,
+    FrozenSet,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Type,
+    Union,
+)
 from warnings import warn
 
 import islpy as isl
@@ -37,7 +47,7 @@ from pytools.tag import Tag, Taggable, tag_dataclass
 from loopy.diagnostic import LoopyError
 from loopy.tools import Optional as LoopyOptional
 from loopy.types import LoopyType
-from loopy.typing import ExpressionT, InameStr
+from loopy.typing import Expression, InameStr
 
 
 # {{{ instruction tags
@@ -250,14 +260,14 @@ class InstructionBase(ImmutableRecord, Taggable):
     groups: FrozenSet[str]
     conflicts_with_groups: FrozenSet[str]
     no_sync_with: FrozenSet[Tuple[str, str]]
-    predicates: FrozenSet[ExpressionT]
+    predicates: FrozenSet[Expression]
     within_inames: FrozenSet[InameStr]
     within_inames_is_final: bool
     priority: int
 
     # within_inames_is_final is deprecated and will be removed in version 2017.x.
 
-    fields = set("id depends_on_is_final "
+    fields: ClassVar[set[str]] = set("id depends_on_is_final "
             "groups conflicts_with_groups "
             "no_sync_with "
             "predicates "
@@ -634,7 +644,7 @@ def _get_assignee_subscript_deps(expr):
 
 # {{{ atomic ops
 
-class MemoryOrdering:  # noqa
+class MemoryOrdering:
     """Ordering of atomic operations, defined as in C11 and OpenCL.
 
     .. attribute:: RELAXED
@@ -662,7 +672,7 @@ class MemoryOrdering:  # noqa
         raise ValueError("Unknown value of MemoryOrdering")
 
 
-class MemoryScope:  # noqa
+class MemoryScope:
     """Scope of atomicity, defined as in OpenCL.
 
     .. attribute:: auto
@@ -901,8 +911,8 @@ class Assignment(MultiAssignmentBase):
     .. automethod:: __init__
     """
 
-    assignee: ExpressionT
-    expression: ExpressionT
+    assignee: Expression
+    expression: Expression
     temp_var_type: LoopyOptional
     atomicity: Tuple[VarAtomicity, ...]
 
@@ -910,8 +920,8 @@ class Assignment(MultiAssignmentBase):
             set("assignee temp_var_type atomicity".split())
 
     def __init__(self,
-                 assignee: Union[str, ExpressionT],
-                 expression: Union[str, ExpressionT],
+                 assignee: Union[str, Expression],
+                 expression: Union[str, Expression],
                  id: Optional[str] = None,
                  happens_after: Union[
                      Mapping[str, HappensAfter], FrozenSet[str], str, None] = None,
@@ -925,8 +935,8 @@ class Assignment(MultiAssignmentBase):
                  predicates: Optional[FrozenSet[str]] = None,
                  tags: Optional[FrozenSet[Tag]] = None,
                  temp_var_type: Union[
-                     Type[_not_provided], None, LoopyOptional,
-                     LoopyType] = _not_provided,
+                     Type[_not_provided], LoopyOptional,
+                     LoopyType, None] = _not_provided,
                  atomicity: Tuple[VarAtomicity, ...] = (),
                  *,
                  depends_on: Union[FrozenSet[str], str, None] = None,
@@ -1271,8 +1281,8 @@ def modify_assignee_for_array_call(assignee):
                 "SubArrayRef as its inputs")
 
 
-def make_assignment(assignees: tuple[ExpressionT, ...],
-                    expression: ExpressionT,
+def make_assignment(assignees: tuple[Expression, ...],
+                    expression: Expression,
                     temp_var_types: (
                         Sequence[LoopyType | None] | None) = None,
                     **kwargs: Any) -> Assignment | CallInstruction:
@@ -1372,7 +1382,7 @@ class CInstruction(InstructionBase):
     .. attribute:: assignees
 
         A sequence (typically a :class:`tuple`) of variable references (with or
-        without subscript) as :class:`pymbolic.primitives.Expression` instances
+        without subscript) as :data:`pymbolic.typing.Expression` instances
         that :attr:`code` writes to. This is optional and only used for
         figuring out dependencies.
     """

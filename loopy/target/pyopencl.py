@@ -37,6 +37,7 @@ from cgen import (
     Block,
     Collection,
     Const,
+    Declarator,
     FunctionBody,
     Generable,
     Initializer,
@@ -67,7 +68,7 @@ from loopy.target.pyopencl_execution import PyOpenCLExecutor
 from loopy.target.python import PythonASTBuilderBase
 from loopy.translation_unit import FunctionIdT, TranslationUnit
 from loopy.types import NumpyType
-from loopy.typing import ExpressionT
+from loopy.typing import Expression
 
 
 logger = logging.getLogger(__name__)
@@ -506,7 +507,7 @@ class PyOpenCLTarget(OpenCLTarget):
     """
 
     # FIXME make prefixes conform to naming rules
-    # (see Reference: Loopy’s Model of a Kernel)
+    # (see Reference: Loopy's Model of a Kernel)
 
     host_program_name_prefix = "_lpy_host_"
     host_program_name_suffix = ""
@@ -522,7 +523,7 @@ class PyOpenCLTarget(OpenCLTarget):
             pointer_size_nbytes: Optional[int] = None
             ) -> None:
         # This ensures the dtype registry is populated.
-        import pyopencl.tools  # noqa
+        import pyopencl.tools
 
         super().__init__(
             atomics_flavor=atomics_flavor,
@@ -553,10 +554,8 @@ class PyOpenCLTarget(OpenCLTarget):
         return None
 
     # NB: Not including 'device', as that is handled specially here.
-    hash_fields = OpenCLTarget.hash_fields + (
-            "pyopencl_module_name",)
-    comparison_fields = OpenCLTarget.comparison_fields + (
-            "pyopencl_module_name",)
+    hash_fields = (*OpenCLTarget.hash_fields, "pyopencl_module_name")
+    comparison_fields = (*OpenCLTarget.comparison_fields, "pyopencl_module_name")
 
     def get_host_ast_builder(self):
         return PyOpenCLPythonASTBuilder(self)
@@ -774,9 +773,8 @@ class PyOpenCLPythonASTBuilder(PythonASTBuilderBase):
         kai = get_kernel_arg_info(codegen_state.kernel)
 
         args = (
-                ["_lpy_cl_kernels", "queue"]
-                + list(kai.passed_arg_names)
-                + ["wait_for=None", "allocator=None"])
+                ["_lpy_cl_kernels", "queue", *kai.passed_arg_names,
+                    "wait_for=None", "allocator=None"])
 
         from genpy import For, Function, Line, Return, Statement as S, Suite
         return Function(
@@ -855,7 +853,7 @@ class PyOpenCLPythonASTBuilder(PythonASTBuilderBase):
     def get_kernel_call(
             self, codegen_state: CodeGenerationState,
             subkernel_name: str,
-            gsize: Tuple[ExpressionT, ...], lsize: Tuple[ExpressionT, ...]
+            gsize: Tuple[Expression, ...], lsize: Tuple[Expression, ...]
             ) -> genpy.Suite:
         from genpy import Assert, Assign, Comment, Line, Suite
 
@@ -920,7 +918,7 @@ class PyOpenCLPythonASTBuilder(PythonASTBuilderBase):
                     "_lpy_cl.mem_flags.READ_ONLY "
                     "| _lpy_cl.mem_flags.COPY_HOST_PTR, "
                     "hostbuf="
-                    f"_lpy_pack({repr(''.join(struct_pack_types))}, "
+                    f"_lpy_pack({''.join(struct_pack_types)!r}, "
                     f"{', '.join(struct_pack_args)}))"),
                 Line(f"_lpy_knl.set_arg({cl_arg_count}, _lpy_overflow_args_buf)")
                 ])
@@ -1030,7 +1028,7 @@ class PyOpenCLCASTBuilder(OpenCLCASTBuilder):
             self, codegen_state: CodeGenerationState,
             codegen_result: CodeGenerationResult,
             schedule_index: int, function_decl: Generable, function_body: Generable,
-            ) -> Tuple[Sequence[Tuple[str, str]], Generable]:
+            ) -> Generable:
         assert isinstance(function_body, Block)
         kernel = codegen_state.kernel
         assert kernel.linearization is not None
@@ -1058,7 +1056,7 @@ class PyOpenCLCASTBuilder(OpenCLCASTBuilder):
                         tv.initializer is not None):
                     assert tv.read_only
 
-                    decl = self.wrap_global_constant(
+                    decl: Generable = self.wrap_global_constant(
                             self.get_temporary_var_declarator(codegen_state, tv))
 
                     if tv.initializer is not None:
@@ -1096,7 +1094,7 @@ class PyOpenCLCASTBuilder(OpenCLCASTBuilder):
         if not result:
             return fbody
         else:
-            return Collection(result+[Line(), fbody])
+            return Collection([*result, Line(), fbody])
 
     def get_function_declaration(
             self, codegen_state: CodeGenerationState,
@@ -1112,14 +1110,14 @@ class PyOpenCLCASTBuilder(OpenCLCASTBuilder):
 
         from cgen import FunctionDeclaration, Struct, Value
 
-        name = codegen_result.current_program(codegen_state).name
+        name_str = codegen_result.current_program(codegen_state).name
         if self.target.fortran_abi:
-            name += "_"
+            name_str += "_"
 
         from loopy.target.c import FunctionDeclarationWrapper
 
         if codegen_state.is_entrypoint:
-            name = Value("void", name)
+            name = Value("void", name_str)
 
             # subkernel launches occur only as part of entrypoint kernels for now
             from loopy.schedule.tools import get_subkernel_arg_info
@@ -1149,7 +1147,7 @@ class PyOpenCLCASTBuilder(OpenCLCASTBuilder):
                         (f"declare-{arg_overflow_struct_name}",
                             str(arg_overflow_struct))
                         ] if struct_overflow_arg_names else []
-                arg_struct_args = [CLGlobal(Const(Pointer(Value(
+                arg_struct_args: list[Declarator] = [CLGlobal(Const(Pointer(Value(
                                 f"struct {arg_overflow_struct_name}",
                                 "_lpy_overflow_args"))))]
             else:
@@ -1168,7 +1166,7 @@ class PyOpenCLCASTBuilder(OpenCLCASTBuilder):
                             + arg_struct_args
                             )))
         else:
-            name = Value("static void", name)
+            name = Value("static void", name_str)
             passed_names = [arg.name for arg in kernel.args]
             written_names = kernel.get_written_variables()
 
@@ -1195,9 +1193,7 @@ class PyOpenCLCASTBuilder(OpenCLCASTBuilder):
         return callables
 
     def preamble_generators(self):
-        return ([
-            pyopencl_preamble_generator,
-            ] + super().preamble_generators())
+        return ([pyopencl_preamble_generator, *super().preamble_generators()])
 
     # }}}
 
