@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 __copyright__ = "Copyright (C) 2012 Andreas Kloeckner"
 
 __license__ = """
@@ -24,7 +27,6 @@ import collections.abc as abc
 import logging
 from functools import cached_property
 from sys import intern
-from typing import List
 
 import numpy as np
 from immutables import Map
@@ -305,10 +307,10 @@ def empty_aligned(shape, dtype, order="C", n=64):
 
     # We now need to know how to offset base_ary
     # so it is correctly aligned
-    _array_aligned_offset = (n-address_from_numpy(base_ary)) % n
+    array_aligned_offset = (n-address_from_numpy(base_ary)) % n
 
     array = np.frombuffer(
-            base_ary[_array_aligned_offset:_array_aligned_offset-n].data,
+            base_ary[array_aligned_offset:array_aligned_offset-n].data,
             dtype=dtype).reshape(shape, order=order)
 
     return array
@@ -832,7 +834,7 @@ def t_unit_to_python(t_unit, var_name="t_unit",
 
 # {{{ cache management
 
-caches: List[WriteOncePersistentDict] = []
+caches: list[WriteOncePersistentDict] = []
 
 
 def clear_in_mem_caches() -> None:
