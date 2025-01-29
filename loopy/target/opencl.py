@@ -27,6 +27,7 @@ THE SOFTWARE.
 from typing import TYPE_CHECKING, Literal, Sequence
 
 import numpy as np
+from immutabledict import immutabledict
 
 from pymbolic import var
 from pytools import memoize_method
@@ -217,9 +218,10 @@ class OpenCLCallable(ScalarCallable):
                 # OpenCL C 2.2, Section 6.13.3: abs returns *u*gentype
                 from loopy.types import to_unsigned_dtype
                 return (self.copy(name_in_target=name,
-                            arg_id_to_dtype={
+                            arg_id_to_dtype=immutabledict({
                                 0: NumpyType(dtype),
-                                -1: NumpyType(to_unsigned_dtype(dtype))}),
+                                -1: NumpyType(to_unsigned_dtype(dtype))
+                                })),
                         callables_table)
             elif dtype.kind == "f":
                 name = "fabs"
@@ -251,8 +253,10 @@ class OpenCLCallable(ScalarCallable):
 
             return (
                     self.copy(name_in_target=name,
-                        arg_id_to_dtype={0: NumpyType(dtype), -1:
-                            NumpyType(dtype)}),
+                        arg_id_to_dtype=immutabledict({
+                            0: NumpyType(dtype),
+                            -1: NumpyType(dtype)
+                            })),
                     callables_table)
 
         # }}}
@@ -283,7 +287,9 @@ class OpenCLCallable(ScalarCallable):
             dtype = NumpyType(dtype)
             return (
                     self.copy(name_in_target=name,
-                        arg_id_to_dtype={-1: dtype, 0: dtype, 1: dtype}),
+                        arg_id_to_dtype=immutabledict({
+                            -1: dtype, 0: dtype, 1: dtype
+                            })),
                     callables_table)
 
         elif name in ["max", "min"]:
@@ -305,7 +311,9 @@ class OpenCLCallable(ScalarCallable):
                 dtype = NumpyType(common_dtype)
                 return (
                         self.copy(name_in_target=name,
-                            arg_id_to_dtype={-1: dtype, 0: dtype, 1: dtype}),
+                            arg_id_to_dtype=immutabledict({
+                                -1: dtype, 0: dtype, 1: dtype
+                                })),
                         callables_table)
             else:
                 # Unsupported type.
@@ -328,8 +336,9 @@ class OpenCLCallable(ScalarCallable):
             dtype = arg_id_to_dtype[0]
             scalar_dtype, _offset, _field_name = dtype.numpy_dtype.fields["s0"]
             return (
-                    self.copy(name_in_target=name, arg_id_to_dtype={-1:
-                        NumpyType(scalar_dtype), 0: dtype, 1: dtype}),
+                    self.copy(name_in_target=name, arg_id_to_dtype=immutabledict({
+                        -1: NumpyType(scalar_dtype), 0: dtype, 1: dtype
+                        })),
                     callables_table)
 
         elif name == "pow":
@@ -352,8 +361,11 @@ class OpenCLCallable(ScalarCallable):
 
             return (
                     self.copy(name_in_target=name,
-                              arg_id_to_dtype={-1: result_dtype,
-                                               0: common_dtype, 1: common_dtype}),
+                              arg_id_to_dtype=immutabledict({
+                                  -1: result_dtype,
+                                  0: common_dtype,
+                                  1: common_dtype
+                                  })),
                     callables_table)
 
         elif name in _CL_SIMPLE_MULTI_ARG_FUNCTIONS:
@@ -379,8 +391,9 @@ class OpenCLCallable(ScalarCallable):
                 raise LoopyError("%s does not support complex numbers"
                         % name)
 
-            updated_arg_id_to_dtype = {id: NumpyType(dtype) for id in range(-1,
-                num_args)}
+            updated_arg_id_to_dtype = immutabledict({
+                id: NumpyType(dtype) for id in range(-1, num_args)
+                })
 
             return (
                     self.copy(name_in_target=name,
@@ -409,8 +422,9 @@ class OpenCLCallable(ScalarCallable):
                         NumpyType(dtype), count)
 
             return (
-                    self.copy(name_in_target="(%s%d) " % (base_tp_name, count),
-                        arg_id_to_dtype=updated_arg_id_to_dtype),
+                    self.copy(
+                        name_in_target="(%s%d) " % (base_tp_name, count),
+                        arg_id_to_dtype=immutabledict(updated_arg_id_to_dtype)),
                     callables_table)
 
         # does not satisfy any of the conditions needed for specialization.

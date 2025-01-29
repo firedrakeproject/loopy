@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 from functools import partial
 
 import numpy as np
+from immutabledict import immutabledict
 from immutables import Map
 
 from pytools import ProcessLogger
@@ -588,7 +589,7 @@ class ArgDescrInferenceMapper(RuleAwareIdentityMapper):
         # }}}
 
         # specializing the function according to the parameter description
-        new_clbl, self.clbl_inf_ctx = clbl.with_descrs(arg_id_to_descr,
+        new_clbl, self.clbl_inf_ctx = clbl.with_descrs(immutabledict(arg_id_to_descr),
                                                        self.clbl_inf_ctx)
 
         self.clbl_inf_ctx, new_func_id = (self.clbl_inf_ctx

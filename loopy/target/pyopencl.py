@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Sequence, cast
 from warnings import warn
 
 import numpy as np
+from immutabledict import immutabledict
 
 import pymbolic.primitives as p
 from cgen import (
@@ -114,8 +115,10 @@ class PyOpenCLCallable(ScalarCallable):
 
                 return (
                         self.copy(name_in_target=f"{tpname}_{name}",
-                            arg_id_to_dtype={0: dtype, -1: NumpyType(
-                                np.dtype(dtype.numpy_dtype.type(0).real))}),
+                            arg_id_to_dtype=immutabledict({
+                                0: dtype,
+                                -1: NumpyType(np.dtype(dtype.numpy_dtype.type(0).real))
+                                })),
                         callables_table)
 
         if name in ["real", "imag", "conj"]:
@@ -124,7 +127,7 @@ class PyOpenCLCallable(ScalarCallable):
                 return (
                         self.copy(
                             name_in_target=f"_lpy_{name}_{tpname}",
-                            arg_id_to_dtype={0: dtype, -1: dtype}),
+                            arg_id_to_dtype=immutabledict({0: dtype, -1: dtype})),
                         callables_table)
 
         if name in ["sqrt", "exp", "log",
@@ -142,7 +145,7 @@ class PyOpenCLCallable(ScalarCallable):
 
                 return (
                         self.copy(name_in_target=f"{tpname}_{name}",
-                            arg_id_to_dtype={0: dtype, -1: dtype}),
+                            arg_id_to_dtype=immutabledict({0: dtype, -1: dtype})),
                         callables_table)
 
             # fall back to pure OpenCL for real-valued arguments
