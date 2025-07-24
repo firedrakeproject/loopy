@@ -21,7 +21,6 @@ THE SOFTWARE.
 """
 
 import logging
-import sys
 
 import numpy as np
 import pytest
@@ -29,29 +28,15 @@ import pytest
 import pyopencl as cl
 import pyopencl.clmath
 import pyopencl.clrandom
+from pyopencl.tools import (  # noqa: F401
+    pytest_generate_tests_for_pyopencl as pytest_generate_tests,
+)
 
 import loopy as lp
+from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa: F401
 
 
 logger = logging.getLogger(__name__)
-
-try:
-    import faulthandler
-except ImportError:
-    pass
-else:
-    faulthandler.enable()
-
-from pyopencl.tools import pytest_generate_tests_for_pyopencl as pytest_generate_tests
-
-
-__all__ = [
-    "cl",  # 'cl.create_some_context'
-    "pytest_generate_tests"
-]
-
-
-from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa
 
 
 def test_assume():
@@ -69,7 +54,7 @@ def test_assume():
     assert "if" not in code
 
 
-def test_divisibility_assumption(ctx_factory):
+def test_divisibility_assumption(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
 
     knl = lp.make_kernel(
@@ -240,7 +225,7 @@ def test_dependent_loop_bounds_4():
         lp.generate_code_v2(loopy_knl)
 
 
-def test_independent_multi_domain(ctx_factory):
+def test_independent_multi_domain(ctx_factory: cl.CtxFactory):
     dtype = np.dtype(np.float32)
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
@@ -276,7 +261,7 @@ def test_independent_multi_domain(ctx_factory):
     assert (b == 2).all()
 
 
-def test_equality_constraints(ctx_factory):
+def test_equality_constraints(ctx_factory: cl.CtxFactory):
     dtype = np.float32
     ctx = ctx_factory()
 
@@ -312,7 +297,7 @@ def test_equality_constraints(ctx_factory):
             parameters={"n": n}, print_ref_code=True)
 
 
-def test_stride(ctx_factory):
+def test_stride(ctx_factory: cl.CtxFactory):
     dtype = np.float32
     ctx = ctx_factory()
 
@@ -338,7 +323,8 @@ def test_stride(ctx_factory):
             parameters={"n": n})
 
 
-def test_domain_dependency_via_existentially_quantified_variable(ctx_factory):
+def test_domain_dependency_via_existentially_quantified_variable(
+        ctx_factory: cl.CtxFactory):
     dtype = np.float32
     ctx = ctx_factory()
 
@@ -378,6 +364,7 @@ def test_triangle_domain():
 
 
 if __name__ == "__main__":
+    import sys
     if len(sys.argv) > 1:
         exec(sys.argv[1])
     else:

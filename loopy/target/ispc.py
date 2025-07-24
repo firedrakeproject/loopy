@@ -24,30 +24,82 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-
-from typing import TYPE_CHECKING, Sequence, cast
+import operator
+from functools import reduce
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
+from typing_extensions import Never, override
 
 import pymbolic.primitives as p
 from cgen import Collection, Const, Declarator, Generable
-from pymbolic import var
+from pymbolic import ArithmeticExpression, var
 from pymbolic.mapper.stringifier import PREC_NONE
+from pymbolic.mapper.substitutor import make_subst_func
 from pytools import memoize_method
 
 from loopy.diagnostic import LoopyError
-from loopy.kernel.data import AddressSpace, ArrayArg, TemporaryVariable
-from loopy.symbolic import Literal
+from loopy.kernel.data import AddressSpace, ArrayArg, LocalInameTag, TemporaryVariable
+from loopy.symbolic import (
+    CoefficientCollector,
+    CombineMapper,
+    GroupHardwareAxisIndex,
+    Literal,
+    LocalHardwareAxisIndex,
+    SubstitutionMapper,
+    flatten,
+)
 from loopy.target.c import CFamilyASTBuilder, CFamilyTarget
 from loopy.target.c.codegen.expression import ExpressionToCExpressionMapper
+from loopy.typing import InameStr, not_none
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+    from pymbolic import Expression
+
     from loopy.codegen import CodeGenerationState
     from loopy.codegen.result import CodeGenerationResult
+    from loopy.kernel import LoopKernel
+    from loopy.kernel.instruction import Assignment
     from loopy.schedule import CallKernel
     from loopy.types import LoopyType
-    from loopy.typing import Expression
+
+
+class IsVaryingMapper(CombineMapper[bool, []]):
+    # FIXME: Update this if/when ispc reduction support is added.
+
+    def __init__(self, kernel: LoopKernel) -> None:
+        self.kernel = kernel
+        super().__init__()
+
+    def combine(self, values: Iterable[bool]) -> bool:
+        return reduce(operator.or_, values, False)
+
+    def map_constant(self, expr):
+        return False
+
+    def map_group_hw_index(self, expr: GroupHardwareAxisIndex) -> Never:
+        # These only exist for a brief blip in time inside the expr-to-cexpr
+        # mapper. We should never see them.
+        raise AssertionError()
+
+    def map_local_hw_index(self, expr: LocalHardwareAxisIndex) -> Never:
+        # These only exist for a brief blip in time inside the expr-to-cexpr
+        # mapper. We should never see them.
+        raise AssertionError()
+
+    def map_variable(self, expr: p.Variable) -> bool:
+        iname = self.kernel.inames.get(expr.name)
+        if iname is not None:
+            ltags = iname.tags_of_type(LocalInameTag)
+            if ltags:
+                ltag, = ltags
+                assert ltag.axis == 0
+                return True
+
+        return False
 
 
 # {{{ expression mapper
@@ -106,8 +158,7 @@ class ExprToISPCExprMapper(ExpressionToCExpressionMapper):
                 return expr
 
         else:
-            return super().map_variable(
-                    expr, type_context)
+            return super().map_variable(expr, type_context)
 
     def map_subscript(self, expr, type_context):
         from loopy.kernel.data import TemporaryVariable
@@ -131,7 +182,7 @@ class ExprToISPCExprMapper(ExpressionToCExpressionMapper):
 
                 subscript, = access_info.subscripts
                 result = var(access_info.array_name)[
-                        var("programIndex") + self.rec(lsize*subscript, "i")]
+                        var("programIndex") + self.rec_arith(lsize*subscript, "i")]
 
                 if access_info.vector_index is not None:
                     return self.kernel.target.add_vector_access(
@@ -141,6 +192,29 @@ class ExprToISPCExprMapper(ExpressionToCExpressionMapper):
 
         return super().map_subscript(
                 expr, type_context)
+
+    def wrap_in_typecast(self, actual_type: LoopyType, needed_type: LoopyType, s):
+        raise NotImplementedError("wrap_in_typecast needs uniform-ness information "
+                                  "for ispc")
+
+    def rec(self, expr, type_context=None, needed_type: LoopyType | None = None):  # type: ignore[override]
+        result = super().rec(expr, type_context)
+
+        if needed_type is None:
+            return result
+        else:
+            actual_type = self.infer_type(expr)
+            if actual_type != needed_type:
+                # FIXME: problematic: potential quadratic complexity
+                is_varying = IsVaryingMapper(self.kernel)(expr)
+                registry = self.codegen_state.ast_builder.target.get_dtype_registry()
+                cast = var("("
+                           f"{'varying' if is_varying else 'uniform'} "
+                           f"{registry.dtype_to_ctype(needed_type)}"
+                           ") ")
+                return cast(result)
+
+            return result
 
 # }}}
 
@@ -211,7 +285,7 @@ class ISPCASTBuilder(CFamilyASTBuilder):
 
     def get_function_declaration(
             self, codegen_state: CodeGenerationState,
-            codegen_result: CodeGenerationResult, schedule_index: int
+            codegen_result: CodeGenerationResult[Generable], schedule_index: int
             ) -> tuple[Sequence[tuple[str, str]], Generable]:
         name = codegen_result.current_program(codegen_state).name
         kernel = codegen_state.kernel
@@ -317,10 +391,10 @@ class ISPCASTBuilder(CFamilyASTBuilder):
 
     # {{{ declarators
 
-    def get_value_arg_declaraotor(
+    def get_value_arg_declarator(
             self, name: str, dtype: LoopyType, is_written: bool) -> Declarator:
         from cgen.ispc import ISPCUniform
-        return ISPCUniform(super().get_value_arg_declaraotor(
+        return ISPCUniform(super().get_value_arg_declarator(
                 name, dtype, is_written))
 
     def get_array_arg_declarator(
@@ -365,7 +439,12 @@ class ISPCASTBuilder(CFamilyASTBuilder):
     # }}}
 
     # {{{ emit_...
-    def emit_assignment(self, codegen_state, insn):
+
+    def emit_assignment(
+                self,
+                codegen_state: CodeGenerationState,
+                insn: Assignment
+            ):
         kernel = codegen_state.kernel
         ecm = codegen_state.expression_to_code_mapper
 
@@ -398,83 +477,62 @@ class ISPCASTBuilder(CFamilyASTBuilder):
 
             from loopy.kernel.array import get_access_info
             from loopy.symbolic import simplify_using_aff
-            index_tuple = tuple(
-                    simplify_using_aff(kernel, idx) for idx in lhs.index_tuple)
 
-            access_info = get_access_info(kernel, ary, index_tuple,
-                    lambda expr: evaluate(expr, codegen_state.var_subst_map),
-                    codegen_state.vectorization_info)
+            if not isinstance(lhs, p.Subscript):
+                raise LoopyError("streaming store must have a subscript as argument")
 
             from loopy.kernel.data import ArrayArg, TemporaryVariable
-
             if not isinstance(ary, (ArrayArg, TemporaryVariable)):
                 raise LoopyError("array type not supported in ISPC: %s"
                         % type(ary).__name)
+
+            index_tuple = tuple(
+                    simplify_using_aff(kernel, cast("ArithmeticExpression", idx))
+                    for idx in lhs.index_tuple)
+
+            access_info = get_access_info(kernel, ary, index_tuple,
+                    lambda expr: cast("int",
+                                      evaluate(expr, codegen_state.var_subst_map)),
+                    codegen_state.vectorization_info)
+
+            l0_inames = {
+                iname for iname in insn.within_inames
+                if kernel.inames[iname].tags_of_type(LocalInameTag)}
 
             if len(access_info.subscripts) != 1:
                 raise LoopyError("streaming stores must have a subscript")
             subscript, = access_info.subscripts
 
-            from pymbolic.primitives import Sum, Variable, flattened_sum
-            if isinstance(subscript, Sum):
-                terms = subscript.children
-            else:
-                terms = (subscript.children,)
+            if l0_inames:
+                l0_iname, = l0_inames
+                coeffs = CoefficientCollector([l0_iname])(subscript)
+                if coeffs[p.Variable(l0_iname)] != 1:
+                    raise ValueError("coefficient of streaming store index "
+                                     "in l.0 variable must be 1")
 
-            new_terms = []
-
-            from loopy.kernel.data import LocalInameTag, filter_iname_tags_by_type
-            from loopy.symbolic import get_dependencies
-
-            saw_l0 = False
-            for term in terms:
-                if (isinstance(term, Variable)
-                            and kernel.iname_tags_of_type(term.name, LocalInameTag)):
-                    tag, = kernel.iname_tags_of_type(
-                        term.name, LocalInameTag, min_num=1, max_num=1)
-                    if tag.axis == 0:
-                        if saw_l0:
-                            raise LoopyError(
-                                "streaming store must have stride 1 in "
-                                "local index, got: %s" % subscript)
-                        saw_l0 = True
-                        continue
-                else:
-                    for dep in get_dependencies(term):
-                        if dep in kernel.all_inames() and (
-                                filter_iname_tags_by_type(kernel.inames[dep].tags,
-                                    LocalInameTag)):
-                            tag, = filter_iname_tags_by_type(
-                                kernel.inames[dep].tags, LocalInameTag, 1)
-                            if tag.axis == 0:
-                                raise LoopyError(
-                                    "streaming store must have stride 1 in "
-                                    "local index, got: %s" % subscript)
-
-                    new_terms.append(term)
-
-            if not saw_l0:
-                raise LoopyError("streaming store must have stride 1 in "
-                        "local index, got: %s" % subscript)
+                subscript = flatten(
+                    SubstitutionMapper(make_subst_func({l0_iname: 0}))(subscript))
+                del l0_iname
 
             if access_info.vector_index is not None:
                 raise LoopyError("streaming store may not use a short-vector "
                         "data type")
 
-            rhs_has_programindex = any(
-                isinstance(tag, LocalInameTag) and tag.axis == 0
-                for tag in kernel.iname_tags(dep)
-                for dep in get_dependencies(insn.expression))
-
-            if not rhs_has_programindex:
-                rhs_code = "broadcast(%s, 0)" % rhs_code
+            if (l0_inames
+                    and not IsVaryingMapper(codegen_state.kernel)(insn.expression)):
+                # rhs is uniform, must be cast to varying in order for streaming_store
+                # to perform a vector store.
+                registry = codegen_state.ast_builder.target.get_dtype_registry()
+                rhs_code = var("(varying "
+                           f"{registry.dtype_to_ctype(not_none(lhs_dtype))}"
+                           f") ({rhs_code})")
 
             from cgen import Statement
             return Statement(
                     "streaming_store(%s + %s, %s)"
                     % (
                         access_info.array_name,
-                        ecm(flattened_sum(new_terms), PREC_NONE, "i"),
+                        ecm(subscript, PREC_NONE, "i"),
                         rhs_code))
 
         # }}}
@@ -482,11 +540,19 @@ class ISPCASTBuilder(CFamilyASTBuilder):
         from cgen import Assign
         return Assign(ecm(lhs, prec=PREC_NONE, type_context=None), rhs_code)
 
-    def emit_sequential_loop(self, codegen_state, iname, iname_dtype,
-            lbound, ubound, inner, hints):
+    @override
+    def emit_sequential_loop(self,
+                codegen_state: CodeGenerationState,
+                iname: InameStr,
+                iname_dtype: LoopyType,
+                lbound: Expression,
+                ubound: Expression,
+                inner: Generable,
+                hints: Sequence[Generable],
+            ) -> Generable:
         ecm = codegen_state.expression_to_code_mapper
 
-        from cgen import For, InlineInitializer
+        from cgen import For, InlineInitializer, Line
         from cgen.ispc import ISPCUniform
         from pymbolic.mapper.stringifier import PREC_NONE
 
@@ -499,11 +565,11 @@ class ISPCASTBuilder(CFamilyASTBuilder):
                 ecm(
                     p.Comparison(var(iname), "<=", ubound),
                     PREC_NONE, "i"),
-                "++%s" % iname,
+                Line("++%s" % iname),
                 inner)
 
         if hints:
-            return Collection([*list(hints), loop])
+            return Collection([*hints, loop])
         else:
             return loop
 

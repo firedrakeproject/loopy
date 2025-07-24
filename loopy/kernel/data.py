@@ -25,7 +25,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-
 from dataclasses import dataclass, replace
 from enum import IntEnum
 from sys import intern
@@ -33,17 +32,16 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Sequence,
-    Tuple,
-    Union,
+    TypeAlias,
     cast,
 )
 
 import numpy  # FIXME: imported as numpy to allow sphinx to resolve things
 import numpy as np
+from typing_extensions import override
 
 from pytools import ImmutableRecord
-from pytools.tag import Tag, Taggable, UniqueTag as UniqueTagBase
+from pytools.tag import Tag, Taggable, TagT, UniqueTag as UniqueTagBase
 
 from loopy.diagnostic import LoopyError
 from loopy.kernel.array import ArrayBase, ArrayDimImplementationTag
@@ -60,13 +58,13 @@ from loopy.kernel.instruction import (  # noqa
     VarAtomicity,
     make_assignment,
 )
-from loopy.typing import Expression, ShapeType, auto
+from loopy.typing import ShapeType, auto
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Hashable, Iterable, Mapping, Sequence
 
-    from pymbolic import ArithmeticExpression, Variable
+    from pymbolic import ArithmeticExpression, Expression, Variable
 
     from loopy.types import LoopyType, ToLoopyTypeConvertible
 
@@ -98,6 +96,10 @@ References
 .. class:: ToLoopyTypeConvertible
 
     See :class:`loopy.ToLoopyTypeConvertible`.
+
+.. class:: TagT
+
+    A type variable with a lower bound of :class:`pytools.tag.Tag`.
 """
 
 # This docstring is included in ref_internals. Do not include parts of the public
@@ -117,9 +119,7 @@ def _names_from_expr(expr: Expression | str | None) -> frozenset[str]:
         return frozenset({expr})
     elif isinstance(expr, ExpressionNode):
         return frozenset(cast("Variable", v).name for v in dep_mapper(expr))
-    elif expr is None:
-        return frozenset()
-    elif isinstance(expr, Number):
+    elif expr is None or isinstance(expr, Number):
         return frozenset()
     else:
         raise ValueError(f"unexpected value of expression-like object: '{expr}'")
@@ -143,7 +143,12 @@ def _names_from_dim_tags(
 
 # {{{ iname tags
 
-def filter_iname_tags_by_type(tags, tag_type, max_num=None, min_num=None):
+def filter_iname_tags_by_type(
+            tags: Iterable[Tag],
+            tag_type: type[TagT] | tuple[type[TagT], ...],
+            max_num: int | None = None,
+            min_num: int | None = None,
+        ) -> set[TagT]:
     """Return a subset of *tags* that matches type *tag_type*. Raises exception
     if the number of tags found were greater than *max_num* or less than
     *min_num*.
@@ -154,7 +159,7 @@ def filter_iname_tags_by_type(tags, tag_type, max_num=None, min_num=None):
     :arg min_num: the minimum number of tags expected to be found.
     """
 
-    result = {tag for tag in tags if isinstance(tag, tag_type)}
+    result: set[TagT] = {tag for tag in tags if isinstance(tag, tag_type)}
 
     def strify_tag_type():
         if isinstance(tag_type, tuple):
@@ -162,23 +167,18 @@ def filter_iname_tags_by_type(tags, tag_type, max_num=None, min_num=None):
         else:
             return tag_type.__name__
 
-    if max_num is not None:
-        if len(result) > max_num:
-            raise LoopyError("cannot have more than {} tags "
-                    "of type(s): {}".format(max_num, strify_tag_type()))
-    if min_num is not None:
-        if len(result) < min_num:
-            raise LoopyError("must have more than {} tags "
-                    "of type(s): {}".format(max_num, strify_tag_type()))
+    if max_num is not None and len(result) > max_num:
+        raise LoopyError("cannot have more than {} tags "
+                "of type(s): {}".format(max_num, strify_tag_type()))
+    if min_num is not None and len(result) < min_num:
+        raise LoopyError("must have more than {} tags "
+                "of type(s): {}".format(max_num, strify_tag_type()))
+
     return result
 
 
-class InameImplementationTag(ImmutableRecord, UniqueTagBase):
-    __slots__: ClassVar[tuple[str, ...]] = ()
-
-    def __hash__(self):
-        return hash(self.key)
-
+@dataclass(frozen=True)
+class InameImplementationTag(UniqueTagBase):
     def __lt__(self, other):
         return self.__hash__() < other.__hash__()
 
@@ -190,7 +190,7 @@ class InameImplementationTag(ImmutableRecord, UniqueTagBase):
         return key_builder.rec(key_hash, self.key)
 
     @property
-    def key(self):
+    def key(self) -> Hashable:
         """Return a hashable, comparable value that is used to ensure
         per-instruction uniqueness of this unique iname tag.
 
@@ -211,24 +211,23 @@ class UniqueInameTag(InameImplementationTag):
     pass
 
 
+@dataclass(frozen=True)
 class AxisTag(UniqueInameTag):
-    __slots__ = ["axis"]
-
-    def __init__(self, axis):
-        ImmutableRecord.__init__(self,
-                axis=axis)
+    axis: int
+    print_name: ClassVar[str]
 
     @property
-    def key(self):
+    @override
+    def key(self) -> tuple[str, int]:
         return (type(self).__name__, self.axis)
 
+    @override
     def __str__(self):
-        return "%s.%d" % (
-                self.print_name, self.axis)
+        return f"{self.print_name}.{self.axis}"
 
 
 class GroupInameTag(HardwareConcurrentTag, AxisTag):
-    print_name = "g"
+    print_name: ClassVar[str] = "g"
 
 
 class LocalInameTagBase(HardwareConcurrentTag):
@@ -236,16 +235,18 @@ class LocalInameTagBase(HardwareConcurrentTag):
 
 
 class LocalInameTag(LocalInameTagBase, AxisTag):
-    print_name = "l"
+    print_name: ClassVar[str] = "l"
 
 
 class AutoLocalInameTagBase(LocalInameTagBase):
     @property
+    @override
     def key(self):
         return type(self).__name__
 
 
 class AutoFitLocalInameTag(AutoLocalInameTagBase):
+    @override
     def __str__(self):
         return "l.auto"
 
@@ -257,11 +258,13 @@ class IlpBaseTag(ConcurrentTag):
 
 
 class UnrolledIlpTag(IlpBaseTag):
+    @override
     def __str__(self):
         return "ilp.unr"
 
 
 class LoopedIlpTag(IlpBaseTag):
+    @override
     def __str__(self):
         return "ilp.seq"
 
@@ -269,26 +272,27 @@ class LoopedIlpTag(IlpBaseTag):
 
 
 class VectorizeTag(UniqueInameTag, HardwareConcurrentTag):
+    @override
     def __str__(self):
         return "vec"
 
 
 class UnrollTag(InameImplementationTag):
+    @override
     def __str__(self):
         return "unr"
 
 
+@dataclass(frozen=True)
 class UnrollHintTag(InameImplementationTag):
-    __slots__ = ["value"]
-
-    def __init__(self, value=None):
-        ImmutableRecord.__init__(self,
-                value=value)
+    value: int | None = None
 
     @property
+    @override
     def key(self):
         return (type(self).__name__, self.value)
 
+    @override
     def __str__(self):
         if self.value:
             return f"unr_hint.{self.value}"
@@ -297,16 +301,18 @@ class UnrollHintTag(InameImplementationTag):
 
 
 class ForceSequentialTag(InameImplementationTag):
+    @override
     def __str__(self):
         return "forceseq"
 
 
 class InOrderSequentialSequentialTag(InameImplementationTag):
+    @override
     def __str__(self):
         return "ord"
 
 
-ToInameTagConvertible = Union[str, Tag, None]
+ToInameTagConvertible: TypeAlias  = str | Tag | None
 
 
 def parse_tag(tag: ToInameTagConvertible) -> Tag | None:
@@ -385,7 +391,7 @@ class AddressSpace(IntEnum):
 
 # {{{ arguments
 
-class KernelArgument(ImmutableRecord):
+class KernelArgument(ImmutableRecord, Taggable):
     """Base class for all argument types.
 
     .. attribute:: name
@@ -615,10 +621,7 @@ class ValueArg(KernelArgument, Taggable):
         import loopy as lp
         assert self.dtype is not lp.auto
 
-        if self.dtype is None:
-            type_str = "<auto/runtime>"
-        else:
-            type_str = str(self.dtype)
+        type_str = "<auto/runtime>" if self.dtype is None else str(self.dtype)
 
         return f"{self.name}: ValueArg, type: {type_str}"
 
@@ -820,7 +823,7 @@ class TemporaryVariable(ArrayBase):
                 raise ValueError("shape is None")
             if self.shape is auto:
                 raise ValueError("shape is auto")
-            shape = cast("Tuple[ArithmeticExpression]", self.shape)
+            shape = cast("tuple[ArithmeticExpression]", self.shape)
 
         if self.dtype is None:
             raise ValueError("data type is indeterminate")

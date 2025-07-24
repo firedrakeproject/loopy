@@ -19,17 +19,23 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
+
+import logging
+
 import numpy as np
 import pytest
 
 import pyopencl as cl
 import pyopencl.array as clarray
-from pyopencl.tools import (
-    pytest_generate_tests_for_pyopencl as pytest_generate_tests,  # noqa
+from pyopencl.tools import (  # noqa: F401
+    pytest_generate_tests_for_pyopencl as pytest_generate_tests,
 )
 
 import loopy as lp
-from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa
+from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa: F401
+
+
+logger = logging.getLogger(__name__)
 
 
 @pytest.fixture
@@ -59,7 +65,7 @@ def parameters(request):
     return dict(zip("kn", request.param))
 
 
-def test_split_slabs(ctx_factory, vanilla, split, parameters):
+def test_split_slabs(ctx_factory: cl.CtxFactory, vanilla, split, parameters):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
     expect = clarray.zeros(queue, 8, dtype=np.int32)

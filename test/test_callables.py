@@ -20,7 +20,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import sys
+import logging
 
 import numpy as np
 import pytest
@@ -36,13 +36,17 @@ import loopy as lp
 from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa: F401
 
 
-def test_register_function_lookup(ctx_factory):
+logger = logging.getLogger(__name__)
+
+
+def test_register_function_lookup(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
+    rng = np.random.default_rng(seed=42)
 
     from testlib import Log2Callable
 
-    x = np.random.rand(10)
+    x = rng.random(size=10)
     queue = cl.CommandQueue(ctx)
 
     prog = lp.make_kernel(
@@ -58,13 +62,14 @@ def test_register_function_lookup(ctx_factory):
 
 
 @pytest.mark.parametrize("inline", [False, True])
-def test_register_knl(ctx_factory, inline):
+def test_register_knl(ctx_factory: cl.CtxFactory, inline):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
-    n = 4
+    rng = np.random.default_rng(seed=42)
 
-    x = np.random.rand(n, n, n, n, n)
-    y = np.random.rand(n, n, n, n, n)
+    n = 4
+    x = rng.random(size=(n, n, n, n, n))
+    y = rng.random(size=(n, n, n, n, n))
 
     grandchild_knl = lp.make_function(
             "{[i, j]:0<= i, j< 4}",
@@ -105,13 +110,14 @@ def test_register_knl(ctx_factory, inline):
 
 
 @pytest.mark.parametrize("inline", [False, True])
-def test_slices_with_negative_step(ctx_factory, inline):
+def test_slices_with_negative_step(ctx_factory: cl.CtxFactory, inline):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
-    n = 4
+    rng = np.random.default_rng(seed=42)
 
-    x = np.random.rand(n, n, n, n, n)
-    y = np.random.rand(n, n, n, n, n)
+    n = 4
+    x = rng.random(size=(n, n, n, n, n))
+    y = rng.random(size=(n, n, n, n, n))
 
     child_knl = lp.make_function(
             "{[i, j]:0<=i, j < 4}",
@@ -144,7 +150,7 @@ def test_slices_with_negative_step(ctx_factory, inline):
 
 
 @pytest.mark.parametrize("inline", [False, True])
-def test_register_knl_with_hw_axes(ctx_factory, inline):
+def test_register_knl_with_hw_axes(ctx_factory: cl.CtxFactory, inline):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -186,7 +192,7 @@ def test_register_knl_with_hw_axes(ctx_factory, inline):
 
 
 @pytest.mark.parametrize("inline", [False, True])
-def test_shape_translation_through_sub_array_ref(ctx_factory, inline):
+def test_shape_translation_through_sub_array_ref(ctx_factory: cl.CtxFactory, inline):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -242,15 +248,19 @@ def test_shape_translation_through_sub_array_ref(ctx_factory, inline):
     assert (np.linalg.norm(np.diag(y3-5*x3.get()))) < 1e-15
 
 
-def test_multi_arg_array_call(ctx_factory):
+def test_multi_arg_array_call(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
+    rng = np.random.default_rng(seed=42)
+
     import pymbolic.primitives as p
+
     n = 10
     acc_i = p.Variable("acc_i")
     i = p.Variable("i")
     index = p.Variable("index")
     a_i = p.Subscript(p.Variable("a"), p.Variable("i"))
+
     argmin_kernel = lp.make_function(
             "{[i]: 0 <= i < n}",
             [
@@ -281,9 +291,9 @@ def test_multi_arg_array_call(ctx_factory):
 
     knl = lp.fix_parameters(knl, n=n)
     knl = lp.set_options(knl, return_dict=True)
-
     knl = lp.merge([knl, argmin_kernel])
-    b = np.random.randn(n)
+
+    b = rng.normal(size=n)
     _evt, out_dict = knl(queue, b=b)
     tol = 1e-15
     from numpy.linalg import norm
@@ -292,7 +302,7 @@ def test_multi_arg_array_call(ctx_factory):
 
 
 @pytest.mark.parametrize("inline", [False, True])
-def test_packing_unpacking(ctx_factory, inline):
+def test_packing_unpacking(ctx_factory: cl.CtxFactory, inline):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -342,13 +352,14 @@ def test_packing_unpacking(ctx_factory, inline):
 
 
 @pytest.mark.parametrize("inline", [False, True])
-def test_empty_sub_array_refs(ctx_factory, inline):
+def test_empty_sub_array_refs(ctx_factory: cl.CtxFactory, inline):
     # See: https://github.com/OP2/PyOP2/pull/559#discussion_r272208618
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
+    rng = np.random.default_rng(seed=42)
 
-    x = np.random.randn(10)
-    y = np.random.randn(10)
+    x = rng.normal(size=10)
+    y = rng.normal(size=10)
 
     callee = lp.make_function(
             "{[d]:0<=d<1}",
@@ -372,13 +383,14 @@ def test_empty_sub_array_refs(ctx_factory, inline):
 
 
 @pytest.mark.parametrize("inline", [False, True])
-def test_array_inputs_to_callee_kernels(ctx_factory, inline):
+def test_array_inputs_to_callee_kernels(ctx_factory: cl.CtxFactory, inline):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
-    n = 2 ** 3
+    rng = np.random.default_rng(seed=42)
 
-    x = np.random.rand(n, n)
-    y = np.random.rand(n, n)
+    n = 2 ** 3
+    x = rng.normal(size=(n, n))
+    y = rng.normal(size=(n, n))
 
     child_knl = lp.make_function(
             "{[i, j]:0<=i, j < 8}",
@@ -409,7 +421,7 @@ def test_array_inputs_to_callee_kernels(ctx_factory, inline):
         np.linalg.norm(2*x+3*y))) < 1e-15
 
 
-def test_stride_depending_on_args(ctx_factory):
+def test_stride_depending_on_args(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
 
     twice = lp.make_function(
@@ -442,7 +454,7 @@ def test_stride_depending_on_args(ctx_factory):
     lp.auto_test_vs_ref(prog, ctx, prog, parameters={"N": 4})
 
 
-def test_unknown_stride_to_callee(ctx_factory):
+def test_unknown_stride_to_callee(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
 
     twice = lp.make_function(
@@ -466,9 +478,11 @@ def test_unknown_stride_to_callee(ctx_factory):
     lp.auto_test_vs_ref(prog, ctx, prog, parameters={"N": 4, "Nvar": 5})
 
 
-def test_argument_matching_for_inplace_update(ctx_factory):
+def test_argument_matching_for_inplace_update(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
+    rng = np.random.default_rng(seed=42)
+
     twice = lp.make_function(
             "{[i]: 0<=i<10}",
             """
@@ -483,15 +497,17 @@ def test_argument_matching_for_inplace_update(ctx_factory):
 
     knl = lp.merge([knl, twice])
 
-    x = np.random.randn(10)
+    x = rng.normal(size=10)
     _evt, (out, ) = knl(queue, x=np.copy(x))
 
     assert np.allclose(2*x, out)
 
 
-def test_non_zero_start_in_subarray_ref(ctx_factory):
+def test_non_zero_start_in_subarray_ref(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
+    rng = np.random.default_rng(seed=42)
+
     twice = lp.make_function(
             "{[i]: 0<=i<10}",
             """
@@ -503,10 +519,9 @@ def test_non_zero_start_in_subarray_ref(ctx_factory):
             """
             [i]:y[i+5] = twice([j]: x[j])
             """, [lp.GlobalArg("x, y", shape=(10,), dtype=np.float64)])
-
     knl = lp.merge([knl, twice])
 
-    x = np.random.randn(10)
+    x = rng.normal(size=10)
     _evt, (out, ) = knl(queue, x=np.copy(x))
 
     assert np.allclose(2*x, out)
@@ -537,7 +552,7 @@ def test_incomplete_entrypoint_raises_type_inf_failure():
         lp.generate_code_v2(prog)
 
 
-def test_callees_with_gbarriers_are_inlined(ctx_factory):
+def test_callees_with_gbarriers_are_inlined(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -565,7 +580,8 @@ def test_callees_with_gbarriers_are_inlined(ctx_factory):
     assert (expected_out == out.get()).all()
 
 
-def test_callees_with_gbarriers_are_inlined_with_nested_calls(ctx_factory):
+def test_callees_with_gbarriers_are_inlined_with_nested_calls(
+        ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -600,7 +616,7 @@ def test_callees_with_gbarriers_are_inlined_with_nested_calls(ctx_factory):
     assert (expected_out == out.get()).all()
 
 
-def test_inlining_with_indirections(ctx_factory):
+def test_inlining_with_indirections(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -632,7 +648,7 @@ def test_inlining_with_indirections(ctx_factory):
     assert (expected_out == out).all()
 
 
-def test_inlining_with_callee_domain_param(ctx_factory):
+def test_inlining_with_callee_domain_param(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -682,7 +698,7 @@ def test_double_resolving():
 
 
 @pytest.mark.parametrize("inline", [False, True])
-def test_passing_and_getting_scalar_in_clbl_knl(ctx_factory, inline):
+def test_passing_and_getting_scalar_in_clbl_knl(ctx_factory: cl.CtxFactory, inline):
     ctx = cl.create_some_context()
     cq = cl.CommandQueue(ctx)
 
@@ -707,10 +723,10 @@ def test_passing_and_getting_scalar_in_clbl_knl(ctx_factory, inline):
 
 
 @pytest.mark.parametrize("inline", [False, True])
-def test_passing_scalar_as_indexed_subcript_in_clbl_knl(ctx_factory, inline):
+def test_passing_scalar_as_indexed_subcript_in_clbl_knl(inline: bool):
     ctx = cl.create_some_context()
     cq = cl.CommandQueue(ctx)
-    x_in = np.random.rand()
+    rng = np.random.default_rng(seed=42)
 
     twice = lp.make_function(
         "{ : }",
@@ -731,12 +747,13 @@ def test_passing_scalar_as_indexed_subcript_in_clbl_knl(ctx_factory, inline):
     if inline:
         knl = lp.inline_callable_kernel(knl, "twice")
 
+    x_in = rng.random()
     _evt, (out,) = knl(cq, X=x_in)
 
     np.testing.assert_allclose(out.get(), 2*x_in)
 
 
-def test_symbol_mangler_in_call(ctx_factory):
+def test_symbol_mangler_in_call():
     from library_for_test import preamble_for_x, symbol_x
     ctx = cl.create_some_context()
     cq = cl.CommandQueue(ctx)
@@ -757,7 +774,7 @@ def test_symbol_mangler_in_call(ctx_factory):
 
 
 @pytest.mark.parametrize("which", ["max", "min"])
-def test_int_max_min_c_target(ctx_factory, which):
+def test_int_max_min_c_target(which: str):
     from numpy.random import default_rng
 
     from pymbolic import parse
@@ -778,7 +795,7 @@ def test_int_max_min_c_target(ctx_factory, which):
     np.testing.assert_allclose(np_func(arr1, arr2), out)
 
 
-def test_valueargs_being_mapped_in_inling(ctx_factory):
+def test_valueargs_being_mapped_in_inling(ctx_factory: cl.CtxFactory):
     doublify = lp.make_function(
             "{[i]: 0<=i<n}",
             """
@@ -804,7 +821,7 @@ def test_valueargs_being_mapped_in_inling(ctx_factory):
 
 
 @pytest.mark.parametrize("inline", [True, False])
-def test_unused_hw_axes_in_callee(ctx_factory, inline):
+def test_unused_hw_axes_in_callee(ctx_factory: cl.CtxFactory, inline):
     ctx = ctx_factory()
 
     twice = lp.make_function(
@@ -861,7 +878,7 @@ def test_double_hw_axes_used_in_knl_call(inline):
 
 
 @pytest.mark.parametrize("inline", [True, False])
-def test_kc_with_floor_div_in_expr(ctx_factory, inline):
+def test_kc_with_floor_div_in_expr(ctx_factory: cl.CtxFactory, inline):
     # See https://github.com/inducer/loopy/issues/366
     import loopy as lp
 
@@ -888,7 +905,7 @@ def test_kc_with_floor_div_in_expr(ctx_factory, inline):
 
 @pytest.mark.parametrize("start", [5, 6, 7])
 @pytest.mark.parametrize("inline", [True, False])
-def test_non1_step_slices(ctx_factory, start, inline):
+def test_non1_step_slices(ctx_factory: cl.CtxFactory, start, inline):
     # See https://github.com/inducer/loopy/pull/222#discussion_r645905188
 
     ctx = ctx_factory()
@@ -933,7 +950,7 @@ def test_non1_step_slices(ctx_factory, start, inline):
     np.testing.assert_allclose(out_dict["Y"].get(), expected_out2)
 
 
-def test_check_bounds_with_caller_assumptions(ctx_factory):
+def test_check_bounds_with_caller_assumptions(ctx_factory: cl.CtxFactory):
     import islpy as isl
 
     from loopy.diagnostic import LoopyIndexError
@@ -964,7 +981,7 @@ def test_check_bounds_with_caller_assumptions(ctx_factory):
                         parameters={"N": 15})
 
 
-def test_callee_with_auto_offset(ctx_factory):
+def test_callee_with_auto_offset(ctx_factory: cl.CtxFactory):
 
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
@@ -992,7 +1009,7 @@ def test_callee_with_auto_offset(ctx_factory):
     np.testing.assert_allclose(y[3:], 2*np.arange(3, 10))
 
 
-def test_callee_with_parameter_and_grid(ctx_factory):
+def test_callee_with_parameter_and_grid(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     cq = cl.CommandQueue(ctx)
 
@@ -1017,7 +1034,7 @@ def test_callee_with_parameter_and_grid(ctx_factory):
 
 
 @pytest.mark.parametrize("inline", [True, False])
-def test_inlining_does_not_require_barrier(inline):
+def test_inlining_does_not_require_barrier(inline: bool):
 
     # {{{ provided by isuruf in https://github.com/inducer/loopy/issues/578
 
@@ -1189,7 +1206,9 @@ def test_inlining_does_not_require_barrier(inline):
                 name="y", dtype=None,
                 shape=lp.auto),
             ],
-        iname_slab_increments={"j_outer": (0, 0)})
+        )
+    loopy_kernel_knl = loopy_kernel_knl.with_kernel(
+    loopy_kernel_knl.default_entrypoint.copy(iname_slab_increments={"j_outer": (0, 0)}))
 
     # }}}
 
@@ -1202,7 +1221,7 @@ def test_inlining_does_not_require_barrier(inline):
     print(lp.generate_code_v2(t_unit).device_code())
 
 
-def test_inlining_w_zero_stride_callee_args(ctx_factory):
+def test_inlining_w_zero_stride_callee_args(ctx_factory: cl.CtxFactory):
     # See https://github.com/inducer/loopy/issues/594
     ctx = ctx_factory()
 
@@ -1227,7 +1246,7 @@ def test_inlining_w_zero_stride_callee_args(ctx_factory):
 
 
 @pytest.mark.parametrize("inline", [True, False])
-def test_call_kernel_w_preds(ctx_factory, inline):
+def test_call_kernel_w_preds(ctx_factory: cl.CtxFactory, inline):
     ctx = ctx_factory()
     cq = cl.CommandQueue(ctx)
 
@@ -1269,7 +1288,7 @@ class OurPrintfDefiner(ImmutableRecord):
 
 
 @pytest.mark.parametrize("inline", [True, False])
-def test_inlining_does_not_lose_preambles(ctx_factory, inline):
+def test_inlining_does_not_lose_preambles(ctx_factory: cl.CtxFactory, inline):
     # loopy.git<=95cc206 would miscompile this
 
     ctx = ctx_factory()
@@ -1307,13 +1326,12 @@ def test_inlining_does_not_lose_preambles(ctx_factory, inline):
 
 
 @pytest.mark.parametrize("inline", [True, False])
-def test_c_instruction_in_callee(ctx_factory, inline):
+def test_c_instruction_in_callee(ctx_factory: cl.CtxFactory, inline):
     from loopy.symbolic import parse
 
     ctx = ctx_factory()
     cq = cl.CommandQueue(ctx)
-
-    n = np.random.randint(3, 8)
+    rng = np.random.default_rng(seed=42)
 
     knl = lp.make_function(
         "{[i]: 0<=i<10}",
@@ -1338,12 +1356,13 @@ def test_c_instruction_in_callee(ctx_factory, inline):
     if inline:
         t_unit = lp.inline_callable_kernel(t_unit, "circuit_breaker")
 
+    n = rng.integers(3, 8)
     _, (out,) = t_unit(cq, N=n)
 
     assert out.get() == (n-1)
 
 
-def test_global_temp_var_with_base_storage(ctx_factory):
+def test_global_temp_var_with_base_storage(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     cq = cl.CommandQueue(ctx)
 
@@ -1375,7 +1394,7 @@ def test_global_temp_var_with_base_storage(ctx_factory):
     assert (d.get() == 5 + 1 + 2 + 3).all()
 
 
-def test_inline_deps(ctx_factory):
+def test_inline_deps(ctx_factory: cl.CtxFactory):
     # https://github.com/inducer/loopy/issues/564
 
     ctx = ctx_factory()
@@ -1459,7 +1478,7 @@ def test_inline_predicate():
     assert code.count("if (a)") == 1
 
 
-def test_subarray_ref_with_repeated_indices(ctx_factory):
+def test_subarray_ref_with_repeated_indices(ctx_factory: cl.CtxFactory):
     # https://github.com/inducer/loopy/pull/735#discussion_r1071690388
 
     ctx = ctx_factory()
@@ -1516,6 +1535,7 @@ def test_inline_constant_access():
 
 
 if __name__ == "__main__":
+    import sys
     if len(sys.argv) > 1:
         exec(sys.argv[1])
     else:

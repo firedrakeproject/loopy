@@ -24,7 +24,6 @@ THE SOFTWARE.
 """
 
 import logging
-import sys
 
 import numpy as np
 import pytest
@@ -32,38 +31,24 @@ import pytest
 import pyopencl as cl
 import pyopencl.clmath
 import pyopencl.clrandom
+from pyopencl.tools import (  # noqa: F401
+    pytest_generate_tests_for_pyopencl as pytest_generate_tests,
+)
 
 import loopy as lp
+from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa: F401
 
 
 logger = logging.getLogger(__name__)
 
-try:
-    import faulthandler
-except ImportError:
-    pass
-else:
-    faulthandler.enable()
-
-from pyopencl.tools import pytest_generate_tests_for_pyopencl as pytest_generate_tests
-
-
-__all__ = [
-    "cl",  # 'cl.create_some_context'
-    "pytest_generate_tests"
-]
-
-
-# More things to test.
+# TODO: More things to test.
 # - scan(a) + scan(b)
 # - test for badly tagged inames
-
-from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa
 
 
 @pytest.mark.parametrize("n", [1, 2, 3, 16])
 @pytest.mark.parametrize("stride", [1, 2])
-def test_sequential_scan(ctx_factory, n, stride):
+def test_sequential_scan(ctx_factory: cl.CtxFactory, n, stride):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -91,7 +76,7 @@ def test_sequential_scan(ctx_factory, n, stride):
     (5, -1),
     ])
 def test_scan_with_different_lower_bound_from_sweep(
-        ctx_factory, sweep_lbound, scan_lbound):
+        ctx_factory: cl.CtxFactory, sweep_lbound, scan_lbound):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -147,7 +132,7 @@ def test_force_outer_iname_for_scan():
     knl = lp.realize_reduction(knl, force_scan=True, force_outer_iname_for_scan="i")
 
 
-def test_dependent_domain_scan(ctx_factory):
+def test_dependent_domain_scan(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -169,7 +154,7 @@ def test_dependent_domain_scan(ctx_factory):
 @pytest.mark.parametrize("i_tag, j_tag", [
     ("for", "for")
     ])
-def test_nested_scan(ctx_factory, i_tag, j_tag):
+def test_nested_scan(ctx_factory: cl.CtxFactory, i_tag, j_tag):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -209,7 +194,7 @@ def test_scan_not_triangular():
 
 
 @pytest.mark.parametrize("n", [1, 2, 3, 16, 17])
-def test_local_parallel_scan(ctx_factory, n):
+def test_local_parallel_scan(ctx_factory: cl.CtxFactory, n):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -231,7 +216,7 @@ def test_local_parallel_scan(ctx_factory, n):
     assert (a == np.cumsum(np.arange(n)**2)).all()
 
 
-def test_local_parallel_scan_with_nonzero_lower_bounds(ctx_factory):
+def test_local_parallel_scan_with_nonzero_lower_bounds(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -264,7 +249,7 @@ def test_scan_extra_constraints_on_domain():
 
 
 @pytest.mark.parametrize("sweep_iname_tag", ["for", "l.1"])
-def test_scan_with_outer_parallel_iname(ctx_factory, sweep_iname_tag):
+def test_scan_with_outer_parallel_iname(ctx_factory: cl.CtxFactory, sweep_iname_tag):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -290,16 +275,17 @@ def test_scan_with_outer_parallel_iname(ctx_factory, sweep_iname_tag):
 
 @pytest.mark.parametrize("dtype", [
     np.int32, np.int64, np.float32, np.float64])
-def test_scan_data_types(ctx_factory, dtype):
+def test_scan_data_types(ctx_factory: cl.CtxFactory, dtype):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
+    rng = np.random.default_rng(seed=42)
 
     knl = lp.make_kernel(
             "{[i,j]: 0<=i<n and 0<=j<=i }",
             "res[i] = reduce(sum, j, a[j])",
             assumptions="n>=1")
 
-    a = np.random.randn(20).astype(dtype)
+    a = rng.normal(size=20).astype(dtype)
     knl = lp.add_dtypes(knl, {"a": dtype})
     knl = lp.realize_reduction(knl, force_scan=True)
     _evt, (res,) = knl(queue, a=a)
@@ -313,16 +299,17 @@ def test_scan_data_types(ctx_factory, dtype):
     ("min", np.min),
     ("max", np.max),
     ])
-def test_scan_library(ctx_factory, op_name, np_op):
+def test_scan_library(ctx_factory: cl.CtxFactory, op_name, np_op):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
+    rng = np.random.default_rng(seed=42)
 
     knl = lp.make_kernel(
             "{[i,j]: 0<=i<n and 0<=j<=i }",
             "res[i] = reduce(%s, j, a[j])" % op_name,
             assumptions="n>=1")
 
-    a = np.random.randn(20)
+    a = rng.normal(size=20)
     knl = lp.add_dtypes(knl, {"a": np.float64})
     knl = lp.realize_reduction(knl, force_scan=True)
     _evt, (res,) = knl(queue, a=a)
@@ -336,15 +323,12 @@ def test_scan_unsupported_tags():
 
 
 @pytest.mark.parametrize("i_tag", ["for", "l.0"])
-def test_argmax(ctx_factory, i_tag):
-    logging.basicConfig(level=logging.INFO)
-
-    dtype = np.dtype(np.float32)
+def test_argmax(ctx_factory: cl.CtxFactory, i_tag):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
+    rng = np.random.default_rng(seed=42)
 
     n = 128
-
     knl = lp.make_kernel(
             "{[i,j]: 0<=i<%d and 0<=j<=i}" % n,
             """
@@ -355,7 +339,7 @@ def test_argmax(ctx_factory, i_tag):
     knl = lp.add_and_infer_dtypes(knl, {"a": np.float32})
     knl = lp.realize_reduction(knl, force_scan=True)
 
-    a = np.random.randn(n).astype(dtype)
+    a = rng.normal(size=n).astype(np.float32)
     _evt, (max_indices, max_vals) = knl(queue, a=a, out_host=True)
 
     assert (max_vals == [np.max(np.abs(a)[0:i+1]) for i in range(n)]).all()
@@ -396,7 +380,11 @@ def check_segmented_scan_output(arr, segment_boundaries_indices, out):
     (3, (0, 1, 2)),
     (16, (0, 4, 8, 12))])
 @pytest.mark.parametrize("iname_tag", ("for", "l.0"))
-def test_segmented_scan(ctx_factory, n, segment_boundaries_indices, iname_tag):
+def test_segmented_scan(
+        ctx_factory: cl.CtxFactory,
+        n: int,
+        segment_boundaries_indices: tuple[int, ...],
+        iname_tag: str):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -423,6 +411,7 @@ def test_segmented_scan(ctx_factory, n, segment_boundaries_indices, iname_tag):
 
 
 if __name__ == "__main__":
+    import sys
     if len(sys.argv) > 1:
         exec(sys.argv[1])
     else:

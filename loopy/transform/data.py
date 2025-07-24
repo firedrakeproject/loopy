@@ -35,14 +35,20 @@ from pytools import MovedFunctionDeprecationWrapper
 
 from loopy.diagnostic import LoopyError
 from loopy.kernel import LoopKernel
-from loopy.kernel.data import AddressSpace, ImageArg, TemporaryVariable, auto
+from loopy.kernel.data import AddressSpace, ImageArg, TemporaryVariable
 from loopy.kernel.function_interface import CallableKernel, ScalarCallable
 from loopy.translation_unit import TranslationUnit, for_each_kernel
 from loopy.types import LoopyType
+from loopy.typing import assert_tuple, auto
 
 
 if TYPE_CHECKING:
-    from loopy.typing import Expression
+    from collections.abc import Sequence
+
+    from pymbolic import ArithmeticExpression, Expression
+
+    from loopy.kernel.array import ToDimTagsParseable
+    from loopy.match import ToMatchConvertible
 
 
 # {{{ convenience: add_prefetch
@@ -162,7 +168,7 @@ def add_prefetch_for_single_kernel(kernel, callables_table, var_name,
         fetch_bounding_box=False,
         fetch_outer_inames=None,
         prefetch_insn_id=None,
-        within=None):
+        within: ToMatchConvertible = None):
     """See :func:`add_prefetch` for detailed, user-facing documentation."""
 
     assert isinstance(kernel, LoopKernel)
@@ -298,13 +304,15 @@ def add_prefetch_for_single_kernel(kernel, callables_table, var_name,
         return new_kernel
 
 
-def add_prefetch(t_unit,
+def add_prefetch(t_unit: TranslationUnit,
                  var_name, sweep_inames=None, dim_arg_names=None,
                  default_tag=None,
                  rule_name=None, temporary_name=None,
                  temporary_address_space=None, temporary_scope=None,
                  footprint_subscripts=None, fetch_bounding_box=False,
-                 fetch_outer_inames=None, prefetch_insn_id=None, within=None):
+                 fetch_outer_inames=None, prefetch_insn_id=None,
+                 within: ToMatchConvertible = None
+             ) -> TranslationUnit:
     """Prefetch all accesses to the variable *var_name*, with all accesses
     being swept through *sweep_inames*.
 
@@ -457,7 +465,11 @@ def change_arg_to_image(kernel, name):
 # {{{ tag array axes
 
 @for_each_kernel
-def tag_array_axes(kernel, ary_names, dim_tags):
+def tag_array_axes(
+            kernel: LoopKernel,
+            ary_names: str | Sequence[str],
+            dim_tags: ToDimTagsParseable,
+        ):
     """
     :arg dim_tags: a tuple of
         :class:`loopy.kernel.array.ArrayDimImplementationTag` or a string that
@@ -990,7 +1002,7 @@ def add_padding_to_avoid_bank_conflicts(kernel, device):
 @dataclass(frozen=True)
 class _BaseStorageInfo:
     name: str
-    next_offset: Expression
+    next_offset: ArithmeticExpression
     approx_nbytes: int | None = None
 
 
@@ -1086,8 +1098,8 @@ def allocate_temporaries_for_base_storage(kernel: LoopKernel,
                     else tv._base_storage_access_may_be_aliasing))
 
             bs_tv = new_tvs[bsi.name]
-            assert isinstance(bs_tv.shape, tuple)
-            bs_size, = bs_tv.shape
+            bs_size: ArithmeticExpression
+            bs_size, = assert_tuple(bs_tv.shape)
             if aliased:
                 new_bs_size = _sym_max(bs_size, ary_size)
             else:

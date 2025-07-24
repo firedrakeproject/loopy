@@ -20,31 +20,22 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-
 import logging
-import sys
 
 import numpy as np
 import pytest
 
 import pyopencl as cl
 import pyopencl.clrandom
+from pyopencl.tools import (  # noqa: F401
+    pytest_generate_tests_for_pyopencl as pytest_generate_tests,
+)
 
 import loopy as lp
 
 
-logger = logging.getLogger(__name__)
-
-from pyopencl.tools import pytest_generate_tests_for_pyopencl as pytest_generate_tests
-
-
-__all__ = [
-    "cl",  # "cl.create_some_context"
-    "pytest_generate_tests"
-]
-
-
 pytest.importorskip("fparser")
+logger = logging.getLogger(__name__)
 
 
 def test_fp_prec_comparison():
@@ -76,7 +67,7 @@ def test_fp_prec_comparison():
     assert prg_sp != prg_dp
 
 
-def test_assign_double_precision_scalar(ctx_factory):
+def test_assign_double_precision_scalar(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -99,7 +90,7 @@ def test_assign_double_precision_scalar(ctx_factory):
     assert abs_err < 1e-15
 
 
-def test_assign_double_precision_scalar_as_rational(ctx_factory):
+def test_assign_double_precision_scalar_as_rational(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -121,7 +112,7 @@ def test_assign_double_precision_scalar_as_rational(ctx_factory):
     assert abs_err < 1e-15
 
 
-def test_assign_single_precision_scalar(ctx_factory):
+def test_assign_single_precision_scalar(ctx_factory: cl.CtxFactory):
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
 
@@ -146,7 +137,7 @@ def test_assign_single_precision_scalar(ctx_factory):
     assert abs_err < 1e-6
 
 
-def test_fill(ctx_factory):
+def test_fill(ctx_factory: cl.CtxFactory):
     fortran_src = """
         subroutine fill(out, a, n)
           implicit none
@@ -179,7 +170,7 @@ def test_fill(ctx_factory):
     lp.auto_test_vs_ref(knl, ctx, knl, parameters={"n": 5, "a": 5})
 
 
-def test_fill_const(ctx_factory):
+def test_fill_const(ctx_factory: cl.CtxFactory):
     fortran_src = """
         subroutine fill(out, a, n)
           implicit none
@@ -200,7 +191,7 @@ def test_fill_const(ctx_factory):
     lp.auto_test_vs_ref(knl, ctx, knl, parameters={"n": 5, "a": 5})
 
 
-def test_asterisk_in_shape(ctx_factory):
+def test_asterisk_in_shape(ctx_factory: cl.CtxFactory):
     fortran_src = """
         subroutine fill(out, out2, inp, n)
           implicit none
@@ -224,7 +215,7 @@ def test_asterisk_in_shape(ctx_factory):
     knl(queue, inp=np.array([1, 2, 3.]), n=3)
 
 
-def test_assignment_to_subst(ctx_factory):
+def test_assignment_to_subst(ctx_factory: cl.CtxFactory):
     fortran_src = """
         subroutine fill(out, out2, inp, n)
           implicit none
@@ -250,7 +241,7 @@ def test_assignment_to_subst(ctx_factory):
     lp.auto_test_vs_ref(ref_knl, ctx, knl, parameters={"n": 5})
 
 
-def test_assignment_to_subst_two_defs(ctx_factory):
+def test_assignment_to_subst_two_defs(ctx_factory: cl.CtxFactory):
     fortran_src = """
         subroutine fill(out, out2, inp, n)
           implicit none
@@ -277,7 +268,7 @@ def test_assignment_to_subst_two_defs(ctx_factory):
     lp.auto_test_vs_ref(ref_knl, ctx, knl, parameters={"n": 5})
 
 
-def test_assignment_to_subst_indices(ctx_factory):
+def test_assignment_to_subst_indices(ctx_factory: cl.CtxFactory):
     fortran_src = """
         subroutine fill(out, out2, inp, n)
           implicit none
@@ -309,7 +300,7 @@ def test_assignment_to_subst_indices(ctx_factory):
     lp.auto_test_vs_ref(ref_knl, ctx, knl)
 
 
-def test_if(ctx_factory):
+def test_if(ctx_factory: cl.CtxFactory):
     fortran_src = """
         subroutine fill(out, out2, inp, n)
           implicit none
@@ -342,7 +333,7 @@ def test_if(ctx_factory):
     lp.auto_test_vs_ref(ref_knl, ctx, knl, parameters={"n": 5})
 
 
-def test_tagged(ctx_factory):
+def test_tagged(ctx_factory: cl.CtxFactory):
     fortran_src = """
         subroutine rot_norm(out, alpha, out2, inp, inp2, n)
           implicit none
@@ -375,14 +366,12 @@ def test_tagged(ctx_factory):
     "",
     "i_inner,j_inner",
     ])
-def test_matmul(ctx_factory, buffer_inames):
+def test_matmul(ctx_factory: cl.CtxFactory, buffer_inames):
     ctx = ctx_factory()
 
     if (buffer_inames and
             ctx.devices[0].platform.name == "Portable Computing Language"):
         pytest.skip("crashes on pocl")
-
-    logging.basicConfig(level=logging.INFO)
 
     fortran_src = """
         subroutine dgemm(m,n,ell,a,b,c)
@@ -478,7 +467,7 @@ def test_batched_sparse():
     knl = lp.fix_parameters(knl, nvecs=4)
 
 
-def test_fuse_kernels(ctx_factory):
+def test_fuse_kernels(ctx_factory: cl.CtxFactory):
     fortran_template = """
         subroutine {name}(nelements, ndofs, result, d, q)
           implicit none
@@ -567,7 +556,7 @@ def test_parse_and_fuse_two_kernels():
     lp.parse_transformed_fortran(fortran_src)
 
 
-def test_precompute_some_exist(ctx_factory):
+def test_precompute_some_exist(ctx_factory: cl.CtxFactory):
     fortran_src = """
         subroutine dgemm(m,n,ell,a,b,c)
           implicit none
@@ -661,7 +650,7 @@ def test_domain_fusion_imperfectly_nested():
     assert len(t_unit["imperfect"].domains) > 1
 
 
-def test_division_in_shapes(ctx_factory):
+def test_division_in_shapes(ctx_factory: cl.CtxFactory):
     fortran_src = """
         subroutine halve(m, a)
             implicit none
@@ -684,6 +673,7 @@ def test_division_in_shapes(ctx_factory):
 
 
 if __name__ == "__main__":
+    import sys
     if len(sys.argv) > 1:
         exec(sys.argv[1])
     else:

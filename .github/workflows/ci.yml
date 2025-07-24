@@ -19,10 +19,10 @@ jobs:
         -   uses: actions/checkout@v4
             with:
                 submodules: true
+        -   uses: astral-sh/setup-uv@v6
         -   name: "Main Script"
             run: |
-                pipx install ruff
-                ruff check
+                uv run --only-dev ruff check
 
     typos:
         name: Typos
@@ -31,31 +31,21 @@ jobs:
         -   uses: actions/checkout@v4
         -   uses: crate-ci/typos@master
 
-    pylint:
-        name: Pylint
+    basedpyright:
         runs-on: ubuntu-latest
         steps:
         -   uses: actions/checkout@v4
         -   name: "Main Script"
             run: |
-                sed 's/python=3/python=3.7/' .test-conda-env-py3.yml > .test-conda-env.yml
-                USE_CONDA_BUILD=1
-                curl -L -O https://gitlab.tiker.net/inducer/ci-support/raw/main/prepare-and-run-pylint.sh
-                . ./prepare-and-run-pylint.sh "$(basename $GITHUB_REPOSITORY)" test/test_*.py
-
-    mypy:
-        name: Mypy
-        runs-on: ubuntu-latest
-        steps:
-        -   uses: actions/checkout@v4
-        -   name: "Main Script"
-            run: |
-                EXTRA_INSTALL="mypy pytest types-colorama types-Pygments"
+                EXTRA_INSTALL="pytest types-colorama types-Pygments scipy-stubs"
                 curl -L -O https://tiker.net/ci-support-v0
                 . ./ci-support-v0
 
                 build_py_project_in_conda_env
-                ./run-mypy.sh
+                cipip install pygments
+                cipip install basedpyright
+
+                basedpyright "$(get_proj_name)" test
 
     pytest:
         name: Conda Pytest
@@ -107,10 +97,15 @@ jobs:
         -   uses: actions/checkout@v4
         -   name: "Main Script"
             run: |
+                # This test makes sure that loopy can run with kernels loaded from disk cache.
                 curl -L -O https://tiker.net/ci-support-v0
                 . ./ci-support-v0
                 build_py_project_in_conda_env
                 ( test_py_project )
+
+                # See https://github.com/inducer/loopy/pull/828 why this is disabled.
+                # export LOOPY_ABORT_ON_CACHE_MISS=1
+
                 ( test_py_project )
 
     examples:
@@ -172,7 +167,9 @@ jobs:
         steps:
         -   name: "Main script"
             run: |
-                cd /home/firedrake
+                cd /root
+                python3 -m venv --system-site-packages myvenv
+
                 export HOME="$(pwd)"
                 mkdir loopy
                 cd loopy
@@ -184,7 +181,7 @@ jobs:
 
                 git submodule update --init
 
-                . /home/firedrake/firedrake/bin/activate
+                . /root/myvenv/bin/activate
 
                 pip install --editable .
                 pip uninstall -y pytools
@@ -192,12 +189,13 @@ jobs:
                 pip install "git+https://github.com/inducer/pytools.git#egg=pytools"
                 pip install "git+https://github.com/inducer/pymbolic.git#egg=pymbolic"
 
-                cd /home/firedrake/firedrake/src/firedrake
+                cd /opt/firedrake
 
                 # patch so exception messages get shown
                 curl -L https://gist.githubusercontent.com/inducer/17d7134ace215f0df1f3627eac4195c7/raw/ec5470a7d8587b6e1f336f3ef1d0ece5e26f236a/firedrake-debug-patch.diff | patch -p1
 
-                pytest --tb=native -rsxw --durations=10 tests/firedrake/regression -k "poisson_strong or stokes_mini or dg_advection"
+                sed -i 's/@mpiexec/@mpiexec --oversubscribe/' Makefile
+                make check
 
     validate_cff:
             name: Validate CITATION.cff
