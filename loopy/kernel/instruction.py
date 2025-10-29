@@ -782,11 +782,9 @@ class OrderedAtomic(VarAtomicity):
         raise NotImplementedError
 
     def __str__(self):
-        return "{}[{}]{}/{}".format(
-                self.op_name,
-                self.var_name,
-                MemoryOrdering.to_string(self.ordering),
-                MemoryScope.to_string(self.scope))
+        ordering = MemoryOrdering.to_string(self.ordering)
+        scope = MemoryScope.to_string(self.scope)
+        return f"{self.op_name}[{self.var_name}]{ordering}/{scope}"
 
 
 class AtomicInit(OrderedAtomic):
@@ -1209,11 +1207,13 @@ class CallInstruction(MultiAssignmentBase):
             predicates.append(new_pred)
         predicates = frozenset(predicates) if changed_predicates else self.predicates
 
-        if len(assignees) == len(self.assignees) and \
-                all(assignee is orig_assignee for assignee, orig_assignee in
-                    zip(assignees, self.assignees)) \
-                and expression is self.expression and \
-                predicates is self.predicates:
+        if (
+                len(assignees) == len(self.assignees)
+                and all(assignee is orig_assignee
+                        for assignee, orig_assignee in
+                        zip(assignees, self.assignees, strict=True))
+                and expression is self.expression
+                and predicates is self.predicates):
             return self
 
         return self.copy(
@@ -1704,8 +1704,7 @@ class BarrierInstruction(_DataObliviousInstruction):
         self.mem_kind = mem_kind
 
     def __str__(self):
-        first_line = \
-                "{}: ... {}barrier".format(self.id, self.synchronization_kind[0])
+        first_line = f"{self.id}: ... {self.synchronize[0]}barrier"
 
         options = self.get_str_options()
         if self.synchronization_kind == "local":

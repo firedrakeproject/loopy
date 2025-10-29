@@ -114,7 +114,7 @@ class DTypeRegistryWrapperWithCL1Atomics(DTypeRegistryWrapperWithAtomics):
 
 # {{{ vector types
 
-class vec:  # noqa
+class vec:  # noqa: N801
     pass
 
 
@@ -162,11 +162,15 @@ def _create_vector_types():
                     "titles": titles})
             except NotImplementedError:
                 try:
-                    dtype = np.dtype([((n, title), base_type)
-                                      for (n, title) in zip(names, titles)])
+                    dtype = np.dtype([
+                        ((n, title), base_type)
+                        for (n, title) in zip(names, titles, strict=True)
+                    ])
                 except TypeError:
-                    dtype = np.dtype([(n, base_type) for (n, title)
-                                      in zip(names, titles)])
+                    dtype = np.dtype([
+                        (n, base_type)
+                        for (n, title) in zip(names, titles, strict=True)
+                    ])
 
             setattr(vec, name, dtype)
 
@@ -475,7 +479,7 @@ def get_opencl_callables():
              "acos", "acosh", "asin", "asinh", "atan", "atanh", "atan2",
              "pow", "exp", "log", "log10", "sqrt", "ceil", "floor",
              "max", "min", "fmax", "fmin",
-             "fabs",  "erf", "erfc"}
+             "fabs", "erf", "erfc"}
             | set(_CL_SIMPLE_MULTI_ARG_FUNCTIONS)
             | set(VECTOR_LITERAL_FUNCS))
 

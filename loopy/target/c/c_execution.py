@@ -164,7 +164,7 @@ class CExecutionWrapperGenerator(ExecutionWrapperGeneratorBase):
                 var("_lpy_expected_strides_%s" % i)
                 for i in range(num_axes))
 
-        gen("{} = {}.strides".format(strify(expected_strides), arg.name))
+        gen(f"{strify(expected_strides)} = {arg.name}.strides")
 
         # check strides
         if not skip_arg_checks:
@@ -454,7 +454,7 @@ class CompiledCKernel:
     def __call__(self, *args):
         """Execute kernel with given args mapped to ctypes equivalents."""
         args_ = []
-        for arg, arg_t in zip(args, self._fn.argtypes):
+        for arg, arg_t in zip(args, self._fn.argtypes, strict=True):
             if hasattr(arg, "ctypes"):
                 # TODO eliminate unused arguments from kernel
                 arg_ = arg_t(0.0) if arg.size == 0 else arg.ctypes.data_as(arg_t)

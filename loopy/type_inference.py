@@ -497,7 +497,7 @@ class TypeInferenceMapper(CombineMapper[Sequence[LoopyType], []]):
             # function not resolved => exit
             return []
 
-        arg_id_to_dtype: dict[int | str, LoopyType]  = {
+        arg_id_to_dtype: dict[int | str, LoopyType] = {
                 # FIXME: In order to properly participate in type inference,
                 # functions must be able to deal with multiple types.
                 i: rpar[0]
@@ -815,7 +815,8 @@ def _infer_var_type(kernel, var_name, type_inf_mapper, subst_expander):
                 result_i = None
                 found = False
                 for assignee, comp_dtype_set in zip(
-                        writer_insn.assignee_var_names(), return_dtype_set):
+                        writer_insn.assignee_var_names(),
+                        return_dtype_set, strict=True):
                     if assignee == var_name:
                         found = True
                         result_i = comp_dtype_set
@@ -905,8 +906,7 @@ def infer_unknown_types_for_a_single_kernel(
 
     # }}}
 
-    logger.debug("finding types for {count:d} names".format(
-            count=len(names_for_type_inference)))
+    logger.debug("finding types for %d names", len(names_for_type_inference))
 
     writer_map = kernel.writer_map()
 
@@ -1088,8 +1088,7 @@ def infer_unknown_types_for_a_single_kernel(
     old_calls_to_new_calls.update(type_inf_mapper.old_calls_to_new_calls)
 
     end_time = time.time()
-    logger.debug("type inference took {dur:.2f} seconds".format(
-            dur=end_time - start_time))
+    logger.debug("type inference took %.2f seconds", end_time - start_time)
 
     if kernel._separation_info():
         sep_names: set[str] = set(kernel._separation_info()) | {

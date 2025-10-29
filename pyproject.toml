@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "loopy"
-version = "2025.1"
+version = "2025.2"
 description = "A code generator for array-based code on CPUs and GPUs"
 readme = "README.rst"
 license = "MIT"
@@ -66,6 +66,13 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.sdist]
 exclude = [
+  "/loopy/target/c/compyte/.*",
+  "/.test*.yml",
+  "/asv*.json",
+  "/MEMO",
+  "/requirements.txt",
+  "/.ci*",
+  "/.git*",
   "/.git*",
   "/doc/_build",
   "/run-*.sh",
@@ -90,33 +97,27 @@ extend-select = [
     "C",   # flake8-comprehensions
     "E",   # pycodestyle
     "F",   # pyflakes
-
+    "FA",  # flake8-future-annotations
     "I",   # flake8-isort
-
     "N",   # pep8-naming
     "NPY", # numpy
+    "PGH", # pygrep-hooks
     "Q",   # flake8-quotes
-    "W",   # pycodestyle
-
+    "RUF", # ruff
+    "SIM", # flake8-simplify
+    "TC",  # flake8-type-checking
     "UP",  # pyupgrade
-    "RUF",  # ruff
-    "FA",
-    "TC",
-    "SIM",
+    "W",   # pycodestyle
 ]
 extend-ignore = [
     "C90",  # McCabe complexity
-    "E221", # multiple spaces before operator
-    "E241", # multiple spaces after comma
-    "E402", # module level import not at the top of file
     "E226", # missing whitespace around operator
+    "E402", # module level import not at the top of file
     "N817", # CamelCase `SubstitutionRuleMappingContext` imported as acronym `SRMC`
     "SIM102", # combine if statements
 
     # FIXME
     "UP031", # .format instead of %s
-    "UP032", # .format instead of %s
-    "B905",  # zip without strict
 ]
 
 [tool.ruff.lint.per-file-ignores]

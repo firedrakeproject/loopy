@@ -282,6 +282,8 @@ class LoopKernel(Taggable):
             if id_str not in used_ids:
                 return intern(id_str)
 
+        raise RuntimeError("Unreachable.")
+
     def all_group_names(self):
         result = set()
         for insn in self.instructions:
@@ -1241,7 +1243,9 @@ class LoopKernel(Taggable):
             lines.extend(sep)
             if show_labels:
                 lines.append("DOMAINS:")
-            for dom, parents in zip(kernel.domains, kernel.all_parents_per_domain()):
+            for dom, parents in zip(
+                    kernel.domains,
+                    kernel.all_parents_per_domain(), strict=True):
                 lines.append(len(parents)*"  " + str(dom))
 
         if "tags" in what:
@@ -1456,9 +1460,7 @@ class LoopKernel(Taggable):
             # Avoid carrying over an invalid cache when instructions are
             # modified.
             try:
-                # The type system does not know about this attribute, and we're
-                # not about to tell it. It's an internal caching hack.
-                cwv = self._cached_written_variables  # type: ignore[attr-defined]
+                cwv = self._cached_written_variables
             except AttributeError:
                 pass
             else:

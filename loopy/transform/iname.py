@@ -721,7 +721,7 @@ def untag_inames(kernel, iname_to_untag, tag_type):
 
 # {{{ tag inames
 
-_Tags_ish: TypeAlias = Tag | Collection[Tag] | str  | Collection[str]
+_Tags_ish: TypeAlias = Tag | Collection[Tag] | str | Collection[str]
 
 
 @for_each_kernel
@@ -940,7 +940,7 @@ def duplicate_inames(kernel, inames, within, new_inames=None, suffix=None,
 
     # {{{ duplicate the inames
 
-    for old_iname, new_iname in zip(inames, new_inames):
+    for old_iname, new_iname in zip(inames, new_inames, strict=True):
         from loopy.kernel.tools import DomainChanger
         domch = DomainChanger(kernel, frozenset([old_iname]))
 
@@ -956,7 +956,7 @@ def duplicate_inames(kernel, inames, within, new_inames=None, suffix=None,
     rule_mapping_context = SubstitutionRuleMappingContext(
             kernel.substitutions, name_gen)
     indup = _InameDuplicator(rule_mapping_context,
-            old_to_new=dict(list(zip(inames, new_inames))),
+            old_to_new=dict(list(zip(inames, new_inames, strict=True))),
             within=within)
 
     def _does_access_old_inames(kernel: LoopKernel,
@@ -975,7 +975,7 @@ def duplicate_inames(kernel, inames, within, new_inames=None, suffix=None,
 
     # {{{ realize tags
 
-    for old_iname, new_iname in zip(inames, new_inames):
+    for old_iname, new_iname in zip(inames, new_inames, strict=True):
         new_tag = tags.get(old_iname)
         if new_tag is not None:
             kernel = tag_inames(kernel, {new_iname: new_tag})
@@ -1291,7 +1291,7 @@ def _split_reduction(kernel, inames, direction, within=None):
     inames = set(inames)
 
     if not (inames <= kernel.all_inames()):
-        raise LoopyError("Unknown inames: {}.".format(inames-kernel.all_inames()))
+        raise LoopyError(f"Unknown inames: {inames - kernel.all_inames()}.")
 
     from loopy.match import parse_stack_match
     within = parse_stack_match(within)
@@ -2031,7 +2031,7 @@ def _apply_identity_for_missing_map_dims(mapping, desired_dims):
     augmented_mapping = add_and_name_dims(
         augmented_mapping, dim_type.out, missing_dims_proxies)
 
-    proxy_name_pairs = list(zip(missing_dims, missing_dims_proxies))
+    proxy_name_pairs = list(zip(missing_dims, missing_dims_proxies, strict=True))
 
     # }}}
 
@@ -2523,8 +2523,8 @@ def rename_inames(
 
             if not (dom_old <= dom_new and dom_new <= dom_old):
                 raise LoopyError(
-                        "inames {old} and {new} do not iterate over the same domain"
-                        .format(old=old_iname, new=new_iname))
+                        f"inames {old_iname} and {new_iname} do not iterate over "
+                        "the same domain")
 
             # }}}
 

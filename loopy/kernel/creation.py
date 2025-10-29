@@ -47,7 +47,7 @@ from loopy.diagnostic import LoopyError, warn_with_kernel
 from loopy.kernel.array import FixedStrideArrayDimTag
 from loopy.kernel.data import (
     AddressSpace,
-    ArrayArg,
+    KernelArgument,
     SubstitutionRule,
     TemporaryVariable,
     ValueArg,
@@ -1194,7 +1194,7 @@ class ArgumentGuesser:
             if isinstance(insn, MultiAssignmentBase):
                 for assignee_var_name, temp_var_type in zip(
                         insn.assignee_var_names(),
-                        insn.temp_var_types):
+                        insn.temp_var_types, strict=True):
                     if temp_var_type.has_value:
                         temp_var_names.add(assignee_var_name)
 
@@ -1375,7 +1375,7 @@ def expand_cses(instructions, inames_to_dup, cse_prefix="cse_expr"):
     newly_created_insn_ids = set()
     new_temp_vars = []
 
-    for insn, insn_inames_to_dup in zip(instructions, inames_to_dup):
+    for insn, insn_inames_to_dup in zip(instructions, inames_to_dup, strict=True):
         if isinstance(insn, MultiAssignmentBase):
             new_expression = cseam(insn.expression, frozenset())
             if new_expression is not insn.expression:
@@ -1429,8 +1429,7 @@ def create_temporaries(knl, default_order):
         if isinstance(insn, MultiAssignmentBase):
             for assignee_name, temp_var_type in zip(
                     insn.assignee_var_names(),
-                    insn.temp_var_types):
-
+                    insn.temp_var_types, strict=True):
                 if not temp_var_type.has_value:
                     continue
 
@@ -1497,7 +1496,7 @@ def find_shapes_of_vars(knl, var_names, feed_expression):
                 base_indices, shape = list(zip(*[
                         knl.cache_manager.base_index_and_length(
                             access_range, i)
-                        for i in range(access_range.dim(dim_type.set))]))
+                        for i in range(access_range.dim(dim_type.set))], strict=True))
             except StaticValueFindingError as e:
                 var_to_error[var_name] = str(e)
                 continue
@@ -1573,8 +1572,8 @@ def determine_shapes_of_temporaries(knl):
         if len(var_to_error) > 0:
             # No way around errors: propagate an exception upward.
             formatted_errors = (
-                "\n\n".join("'{}': {}".format(varname, var_to_error[varname])
-                for varname in sorted(var_to_error.keys())))
+                "\n\n".join(f"'{varname}': {var_to_error[varname]}"
+                            for varname in sorted(var_to_error.keys())))
 
             raise LoopyError("got the following exception(s) trying to find the "
                     "shape of temporary variables: %s" % formatted_errors)
@@ -1957,10 +1956,10 @@ class SliceToInameReplacer(IdentityMapper[[]]):
                     shape = self.knl.temporary_variables[
                             expr.aggregate.name].shape
                 if shape is None or shape[i] is None:
-                    raise LoopyError("Slice notation is only supported for "
+                    raise LoopyError(
+                            "Slice notation is only supported for "
                             "variables whose shapes are known at creation time "
-                            "-- maybe add the shape for '{}'.".format(
-                                expr.aggregate.name))
+                            f"-- maybe add the shape for '{expr.aggregate.name}'.")
 
                 domain_length = shape[i]
                 start, stop, step = normalize_slice_params(index, domain_length)
@@ -2090,7 +2089,7 @@ def make_function(
                 InstructionBase | SubstitutionRule | str
             ] | str,
             kernel_data: Sequence[
-                ValueArg | ArrayArg | TemporaryVariable | EllipsisType | str
+                KernelArgument | TemporaryVariable | EllipsisType | str
             ] | str = (...,),
             *,
             temporary_variables: Mapping[str, TemporaryVariable] | None = None,
@@ -2288,14 +2287,10 @@ def make_function(
             )
             warn("'lang_version' was not passed to make_function(). "
                     "To avoid this warning, pass "
-                    "lang_version={ver} in this invocation. "
+                    f"lang_version={MOST_RECENT_LANGUAGE_VERSION} in this invocation. "
                     "(Or say 'from loopy.version import "
-                    "{sym_ver}' in "
-                    "the global scope of the calling frame.)"
-                    .format(
-                        ver=MOST_RECENT_LANGUAGE_VERSION,
-                        sym_ver=version_to_symbol[MOST_RECENT_LANGUAGE_VERSION]
-                        ),
+                    f"{version_to_symbol[MOST_RECENT_LANGUAGE_VERSION]}' in "
+                    "the global scope of the calling frame.)",
                     LoopyWarning, stacklevel=2)
 
             lang_version = FALLBACK_LANGUAGE_VERSION
@@ -2471,7 +2466,7 @@ def make_function(
     # -------------------------------------------------------------------------
     from loopy import duplicate_inames
     from loopy.match import Id
-    for insn, insn_inames_to_dup in zip(knl.instructions, inames_to_dup):
+    for insn, insn_inames_to_dup in zip(knl.instructions, inames_to_dup, strict=True):
         for old_iname, new_iname in insn_inames_to_dup:
             knl = duplicate_inames(knl, old_iname,
                     within=Id(insn.id), new_inames=new_iname)
@@ -2524,7 +2519,7 @@ def make_kernel(
                 InstructionBase | SubstitutionRule | str
             ] | str,
             kernel_data: Sequence[
-                ValueArg | ArrayArg | TemporaryVariable | EllipsisType | str
+                KernelArgument | TemporaryVariable | EllipsisType | str
             ] = (...,),
             *,
             temporary_variables: Mapping[str, TemporaryVariable] | None = None,

@@ -548,7 +548,7 @@ class PyOpenCLTarget(OpenCLTarget):
             pointer_size_nbytes: int | None = None
             ) -> None:
         # This ensures the dtype registry is populated.
-        import pyopencl.tools
+        import pyopencl.tools  # pyright: ignore[reportUnusedImport]  # noqa: F401
 
         super().__init__(
             atomics_flavor=atomics_flavor,
@@ -644,9 +644,7 @@ class PyOpenCLTarget(OpenCLTarget):
     def get_kernel_executor_cache_key(self, queue, **kwargs):
         return (queue.context, kwargs["entrypoint"])
 
-    # type-ignore because we're making things from *args: Any more concrete,
-    # and mypy doesn't like it.
-    def get_kernel_executor(self, t_unit: TranslationUnit,  # type: ignore[override]
+    def get_kernel_executor(self, t_unit: TranslationUnit,
                             queue_or_context: cl.CommandQueue | cl.Context,
                             *args: Any, entrypoint: CallableId, **kwargs: Any
                             ) -> PyOpenCLExecutor:

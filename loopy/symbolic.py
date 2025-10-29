@@ -193,7 +193,7 @@ class IdentityMapperMixin(Mapper[Expression, P]):
                          for iname in expr.inames]
 
         new_inames = []
-        for iname, new_sym_iname in zip(expr.inames, mapped_inames):
+        for iname, new_sym_iname in zip(expr.inames, mapped_inames, strict=True):
             if not isinstance(new_sym_iname, Variable):
                 from loopy.diagnostic import LoopyError
                 raise LoopyError("%s did not map iname '%s' to a variable"
@@ -234,8 +234,9 @@ class IdentityMapperMixin(Mapper[Expression, P]):
         assert isinstance(new_inames, tuple)
         assert isinstance(new_subscript, p.Subscript)
         if (all(new_iname is old_iname
-                for new_iname, old_iname in zip(new_inames, expr.swept_inames))
-                and new_subscript is expr.subscript):
+                for new_iname, old_iname in
+                zip(new_inames, expr.swept_inames, strict=True))
+            and new_subscript is expr.subscript):
             return expr
 
         return SubArrayRef(cast("tuple[Variable, ...]", new_inames), new_subscript)
@@ -462,8 +463,8 @@ class StringifyMapper(StringifyMapperBase[[]]):
 
     def map_type_cast(self, expr, enclosing_prec):
         from pymbolic.mapper.stringifier import PREC_NONE
-        return "cast({}, {})".format(
-                repr(expr.type), self.rec(expr.child, PREC_NONE))
+        child = self.rec(expr.child, PREC_NONE)
+        return f"cast({expr.type!r}, {child})"
 
     def map_resolved_function(self, expr, prec):
         # underlining a resolved call
@@ -486,7 +487,7 @@ class UnidirectionalUnifier(UnidirectionalUnifierBase):
         if not isinstance(other, type(expr)):
             return self.treat_mismatch(expr, other, unis)
         if (expr.inames != other.inames
-                or type(expr.function) != type(other.function)):  # noqa
+                or type(expr.function) is not type(other.function)):
             return []
 
         return self.rec(expr.expr, other.expr, unis)
@@ -1396,7 +1397,8 @@ class RuleAwareIdentityMapper(IdentityMapper[Concatenate[ExpansionState, P]]):
         arg_subst_map = SubstitutionMapper(make_subst_func(arg_context))
         return constantdict({
             formal_arg_name: arg_subst_map(arg_value)
-            for formal_arg_name, arg_value in zip(arg_names, arguments)})
+            for formal_arg_name, arg_value in zip(arg_names, arguments, strict=True)
+        })
 
     def map_subst_rule(
                 self, name: str, tags, arguments, expn_state: ExpansionState,
@@ -1778,7 +1780,7 @@ class LoopyParser(ParserBase):
 
             return TypeAnnotation(
                     typename,
-                    cast("Expression", self.parse_expression(pstate, _PREC_UNARY)))
+                    self.parse_expression(pstate, _PREC_UNARY))
 
         elif pstate.is_next(_openbracket):
             rollback_pstate = pstate.copy()
@@ -1815,7 +1817,7 @@ class LoopyParser(ParserBase):
             pstate.expect_not_end()
             left_exp = LinearSubscript(
                         left_exp,
-                        cast("Expression", self.parse_expression(pstate)))
+                        self.parse_expression(pstate))
             pstate.expect(_closebracket)
             pstate.advance()
             pstate.expect(_closebracket)
@@ -2252,7 +2254,7 @@ def _get_monomial_coeff_from_term(space, term):
 
 def _take_common_denominator(coeffs):
     denominators = [coeff.get_den_val() for coeff in coeffs]
-    numerators = [coeff * den for coeff, den in zip(coeffs, denominators)]
+    numerators = [coeff * den for coeff, den in zip(coeffs, denominators, strict=True)]
 
     common_denominator = isl.Val.one(coeffs[0].get_ctx())
     for den in denominators:
@@ -2261,7 +2263,8 @@ def _take_common_denominator(coeffs):
                               .div(den.gcd(common_denominator)))
 
     numerators_scaled = [numerator * (common_denominator.div(denominator))
-                         for numerator, denominator in zip(numerators, denominators)]
+                         for numerator, denominator in
+                         zip(numerators, denominators, strict=True)]
 
     return (tuple(num.to_python() for num in numerators_scaled),
             common_denominator.to_python())
@@ -2272,7 +2275,7 @@ def qpolynomial_to_expr(qpoly):
 
     space = qpoly.space
     monomials, coeffs = zip(*[_get_monomial_coeff_from_term(space, t)
-                              for t in qpoly.get_terms()])
+                              for t in qpoly.get_terms()], strict=True)
 
     numerators, common_denominator = _take_common_denominator(coeffs)
 
@@ -2283,11 +2286,12 @@ def qpolynomial_to_expr(qpoly):
     # FIXME: Delete if in favor of the general case once we depend on pymbolic 2024.1.
     if common_denominator == 1:
         res = sum(num * monomial
-                   for num, monomial in zip(numerators, monomials))
+                  for num, monomial in zip(numerators, monomials, strict=True))
     else:
-        res = FloorDiv(sum(num * monomial
-                            for num, monomial in zip(numerators, monomials)),
-                        common_denominator)
+        res = FloorDiv(
+            sum(num * monomial
+                for num, monomial in zip(numerators, monomials, strict=True)),
+            common_denominator)
 
     return flatten(res)
 
@@ -2866,7 +2870,7 @@ class AccessRangeOverlapChecker:
             exprs.extend(insn.predicates)
 
         from collections import defaultdict
-        aranges: defaultdict[str, bool | isl.Set | None] = defaultdict(lambda: False)
+        ranges: defaultdict[str, bool | isl.Set | None] = defaultdict(lambda: False)
 
         arm = BatchedAccessMapMapper(self.kernel, self.vars, overestimate=True)
 
@@ -2875,11 +2879,11 @@ class AccessRangeOverlapChecker:
 
         for name in arm.access_maps:
             if arm.bad_subscripts[name]:
-                aranges[name] = True
+                ranges[name] = True
                 continue
-            aranges[name] = arm.get_access_range(name)
+            ranges[name] = arm.get_access_range(name)
 
-        return aranges
+        return ranges
 
     def _get_access_range_for_var(self,
                 insn_id: str,
@@ -2974,7 +2978,7 @@ def is_tuple_of_expressions_equal(
 
     return all(
         is_expression_equal(ai, bi)
-        for ai, bi in zip(a, b))
+        for ai, bi in zip(a, b, strict=True))
 
 # }}}
 

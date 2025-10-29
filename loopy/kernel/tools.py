@@ -684,7 +684,7 @@ def get_dot_dependency_graph(kernel, callables_table, iname_cluster=True,
             elif isinstance(sched_item, (CallKernel, ReturnFromKernel, Barrier)):
                 pass
             else:
-                raise LoopyError("schedule item not unterstood: %r" % sched_item)
+                raise LoopyError("schedule item not understood: %r" % sched_item)
 
     return "digraph {} {{\n{}\n}}".format(
             kernel.name,
@@ -847,7 +847,7 @@ def get_auto_axis_iname_ranking_by_stride(kernel, insn):
         # {{{ construct iname_to_stride_expr
 
         iname_to_stride_expr = {}
-        for iexpr_i, stride in zip(index_expr, ary_strides):
+        for iexpr_i, stride in zip(index_expr, ary_strides, strict=True):
             if stride is None:
                 continue
             coeffs = CoefficientCollector()(iexpr_i)
@@ -857,7 +857,7 @@ def get_auto_axis_iname_ranking_by_stride(kernel, insn):
                     if var.name in auto_axis_inames:
                         # excludes '1', i.e.  the constant
                         new_stride = coeff*stride
-                        old_stride = iname_to_stride_expr.get(var.name, None)
+                        old_stride = iname_to_stride_expr.get(var.name)
                         if old_stride is None or new_stride < old_stride:
                             iname_to_stride_expr[var.name] = new_stride
 
@@ -1599,8 +1599,8 @@ def stringify_instruction_list(kernel: LoopKernel) -> list[str]:
 
     import loopy as lp
 
-    Fore = kernel.options._fore  # noqa
-    Style = kernel.options._style  # noqa
+    Fore = kernel.options._fore  # noqa: N806
+    Style = kernel.options._style  # noqa: N806
 
     uniform_arrow_length, arrows_and_extenders = \
             draw_dependencies_as_unicode_arrows(
@@ -1653,7 +1653,7 @@ def stringify_instruction_list(kernel: LoopKernel) -> list[str]:
         current_inames[0] = new_inames
 
     for insn, (arrows, extender) in zip(  # noqa: B007
-            printed_insn_order, arrows_and_extenders):
+            printed_insn_order, arrows_and_extenders, strict=True):
         if isinstance(insn, lp.MultiAssignmentBase):
             lhs = ", ".join(str(a) for a in insn.assignees)
             rhs = str(insn.expression)
@@ -1704,12 +1704,11 @@ def stringify_instruction_list(kernel: LoopKernel) -> list[str]:
             options.append("mem_kind=%s" % insn.mem_kind)
 
         if lhs:
-            core = "{} = {}".format(
-                Fore.CYAN+lhs+Style.RESET_ALL,
-                Fore.MAGENTA+rhs+Style.RESET_ALL,
-                )
+            core = (
+                f"{Fore.CYAN}{lhs}{Style.RESET_ALL} "
+                f"= {Fore.MAGENTA}{rhs}{Style.RESET_ALL}")
         else:
-            core = Fore.MAGENTA+rhs+Style.RESET_ALL
+            core = f"{Fore.MAGENTA}{rhs}{Style.RESET_ALL}"
 
         options_str = "  {%s}" % ", ".join(options)
 
@@ -2084,9 +2083,9 @@ def infer_args_are_input_output(kernel: LoopKernel):
             raise NotImplementedError("Unknown argument type %s." % type(arg))
 
         if not (arg.is_input or arg.is_output):
-            raise LoopyError("Kernel argument must be either input or output."
-                    " '{}' in '{}' does not follow it.".format(arg.name,
-                        kernel.name))
+            raise LoopyError(
+                    "Kernel argument must be either input or output."
+                    f" '{arg.name}' in '{kernel.name}' does not follow it.")
 
         new_args.append(arg)
 

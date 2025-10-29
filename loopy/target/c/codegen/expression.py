@@ -143,7 +143,7 @@ class ExpressionToCExpressionMapper(IdentityMapper[[str]]):
     def rec(self,
             expr: Expression,
             type_context: str | None = None,
-            needed_type: LoopyType | None = None) -> Expression:  # type: ignore[override]
+            needed_type: LoopyType | None = None) -> Expression:
         result = super().rec(expr, type_context)
 
         if needed_type is None:
@@ -154,7 +154,7 @@ class ExpressionToCExpressionMapper(IdentityMapper[[str]]):
                     result)
 
     @override
-    def __call__(self,  # type: ignore[override]  # pyright: ignore[reportIncompatibleMethodOverride]
+    def __call__(self,  # pyright: ignore[reportIncompatibleMethodOverride]
                  expr: Expression,
                  prec: int | None = None,
                  type_context: str | None = None,
@@ -211,12 +211,12 @@ class ExpressionToCExpressionMapper(IdentityMapper[[str]]):
                             % expr.name)
 
             if isinstance(arg, ValueArg) and self.fortran_abi:
-                postproc = lambda x: x[0]  # noqa
+                postproc = lambda x: x[0]  # noqa: E731
         elif expr.name in self.kernel.temporary_variables:
             temporary = self.kernel.temporary_variables[expr.name]
             if (temporary.base_storage
                     or temporary.address_space == AddressSpace.GLOBAL):
-                postproc = lambda x: x[0]  # noqa
+                postproc = lambda x: x[0]  # noqa: E731
 
         result = self.kernel.mangle_symbol(self.codegen_state.ast_builder, expr.name)
         if result is not None:
@@ -713,28 +713,26 @@ class CExpressionToCodeMapper(Mapper):
     map_tagged_variable = map_variable
 
     def map_lookup(self, expr, enclosing_prec):
+        aggregate = self.rec(expr.aggregate, PREC_CALL)
         return self.parenthesize_if_needed(
-                "{}.{}".format(
-                    self.rec(expr.aggregate, PREC_CALL), expr.name),
+                f"{aggregate}.{expr.name}",
                 enclosing_prec, PREC_CALL)
 
     def map_subscript(self, expr, enclosing_prec):
+        aggregate = self.rec(expr.aggregate, PREC_CALL + 1)
+        index = self.rec(expr.index, PREC_NONE)
         return self.parenthesize_if_needed(
-                "{}[{}]".format(
-                    self.rec(expr.aggregate, PREC_CALL+1),
-                    self.rec(expr.index, PREC_NONE)),
+                f"{aggregate}[{index}]",
                 enclosing_prec, PREC_CALL)
 
     def map_min(self, expr, enclosing_prec):
         what = type(expr).__name__.lower()
-
         children = list(expr.children)
 
         result = self.rec(children.pop(), PREC_NONE)
         while children:
-            result = "{}({}, {})".format(what,
-                        self.rec(children.pop(), PREC_NONE),
-                        result)
+            child = self.rec(children.pop(), PREC_NONE)
+            result = f"{what}({child}, {result})"
 
         return result
 
@@ -742,24 +740,25 @@ class CExpressionToCodeMapper(Mapper):
 
     def map_if(self, expr, enclosing_prec):
         from pymbolic.mapper.stringifier import PREC_CALL, PREC_NONE
-        return "({} ? {} : {})".format(
-                # Force parentheses around the condition to prevent compiler
-                # warnings regarding precedence (e.g. with POCL 1.8/LLVM 12):
-                # "warning: pocl-cache/tempfile_BYDWne.cl:96:2241: operator '?:'
-                # has lower precedence than '*'; '*' will be evaluated first"
-                self.rec(expr.condition, PREC_CALL),
-                self.rec(expr.then, PREC_NONE),
-                self.rec(expr.else_, PREC_NONE),
-                )
+
+        # Force parentheses around the condition to prevent compiler warnings
+        # regarding precedence (e.g. with POCL 1.8/LLVM 12):
+        #
+        #   warning: pocl-cache/tempfile_BYDWne.cl:96:2241: operator '?:' has lower
+        #   precedence than '*'; '*' will be evaluated first
+        cond_ = self.rec(expr.condition, PREC_CALL)
+        then_ = self.rec(expr.then, PREC_NONE)
+        else_ = self.rec(expr.else_, PREC_NONE)
+
+        return f"({cond_} ? {then_} : {else_})"
 
     def map_comparison(self, expr, enclosing_prec):
         from pymbolic.mapper.stringifier import PREC_COMPARISON
 
+        left = self.rec(expr.left, PREC_COMPARISON)
+        right = self.rec(expr.right, PREC_COMPARISON)
         return self.parenthesize_if_needed(
-                "{} {} {}".format(
-                    self.rec(expr.left, PREC_COMPARISON),
-                    expr.operator,
-                    self.rec(expr.right, PREC_COMPARISON)),
+                f"{left} {expr.operator} {right}",
                 enclosing_prec, PREC_COMPARISON)
 
     def map_literal(self, expr, enclosing_prec):

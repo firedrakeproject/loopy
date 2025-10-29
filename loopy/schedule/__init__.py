@@ -350,13 +350,9 @@ def find_loop_insn_dep_map(
                 if not may_add_to_loop_dep_map:
                     continue
 
-                logger.debug("{knl}: loop dependency map: iname '{iname}' "
-                        "depends on '{dep_insn}' via '{insn}'"
-                        .format(
-                            knl=kernel.name,
-                            iname=iname,
-                            dep_insn=dep_insn_id,
-                            insn=insn.id))
+                logger.debug(
+                    "%s: loop dependency map: iname '%s' depends on '%s' via '%s'",
+                    kernel.name, iname, dep_insn_id, insn.id)
 
                 iname_dep.add(dep_insn_id)
 
@@ -448,42 +444,40 @@ def sched_item_to_insn_id(sched_item: ScheduleItem) -> Iterator[str]:
 # {{{ debug help
 
 def format_insn_id(kernel: LoopKernel, insn_id: InsnId):
-    Fore = kernel.options._fore  # noqa
-    Style = kernel.options._style  # noqa
+    Fore = kernel.options._fore  # noqa: N806
+    Style = kernel.options._style  # noqa: N806
     return Fore.GREEN + insn_id + Style.RESET_ALL
 
 
 def format_insn(kernel: LoopKernel, insn_id: InsnId):
     insn = kernel.id_to_insn[insn_id]
-    Fore = kernel.options._fore  # noqa
-    Style = kernel.options._style  # noqa
+    Fore = kernel.options._fore  # noqa: N806
+    Style = kernel.options._style  # noqa: N806
     from loopy.kernel.instruction import (
         BarrierInstruction,
         MultiAssignmentBase,
         NoOpInstruction,
     )
     if isinstance(insn, MultiAssignmentBase):
-        return "{}{}{} = {}{}{}  {{id={}}""}".format(
-            Fore.CYAN, ", ".join(str(a) for a in insn.assignees), Style.RESET_ALL,
-            Fore.MAGENTA, str(insn.expression), Style.RESET_ALL,
-            format_insn_id(kernel, insn_id))
+        assignees = ", ".join(str(a) for a in insn.assignees)
+        insn_id = format_insn_id(kernel, insn_id)
+        return (
+            f"{Fore.CYAN}{assignees}{Style.RESET_ALL} "
+            f"= {Fore.MAGENTA}{insn.expression}{Style.RESET_ALL}  {{id={insn_id}}}")
     elif isinstance(insn, BarrierInstruction):
         mem_kind = ""
         if insn.synchronization_kind == "local":
             mem_kind = "{mem_kind=%s}" % insn.mem_kind
 
-        return "[{}] {}... {}barrier{}{}".format(
-                format_insn_id(kernel, insn_id),
-                Fore.MAGENTA, insn.synchronization_kind[0], mem_kind,
-                Style.RESET_ALL)
+        insn_id = format_insn_id(kernel, insn_id)
+        sync_kind = insn.synchronization_kind[0]
+        return f"[{insn_id}] {Fore.MAGENTA}... {sync_kind}barrier{mem_kind}{Style.RESET_LL}"  # noqa: E501
     elif isinstance(insn, NoOpInstruction):
-        return "[{}] {}... nop{}".format(
-                format_insn_id(kernel, insn_id),
-                Fore.MAGENTA, Style.RESET_ALL)
+        insn_id = format_insn_id(kernel, insn_id)
+        return f"[{insn_id}] {Fore.MAGENTA}... nop{Style.RESET_ALL}"
     else:
-        return "[{}] {}{}{}".format(
-                format_insn_id(kernel, insn_id),
-                Fore.CYAN, str(insn), Style.RESET_ALL)
+        insn_id = format_insn_id(kernel, insn_id)
+        return f"[{insn_id}] {Fore.CYAN}{insn}{Style.RESET_ALL}"
 
 
 def dump_schedule(kernel: LoopKernel, schedule: Sequence[ScheduleItem]):
@@ -724,7 +718,7 @@ def get_insns_in_topologically_sorted_order(
     #
     # Instead of returning these features as a key, we assign an id to
     # each set of features to avoid comparing them which can be expensive.
-    insn_id_to_feature_id = {}
+    insn_id_to_feature_id: dict[InsnId, int] = {}
     insn_features: dict[Hashable, int] = {}
     for insn in kernel.instructions:
         feature = (insn.within_inames, insn.groups, insn.conflicts_with_groups)
@@ -735,7 +729,7 @@ def get_insns_in_topologically_sorted_order(
             feature_id = insn_features[feature]
         insn_id_to_feature_id[insn.id] = feature_id
 
-    def key(insn_id):
+    def key(insn_id: InsnId):
         # negative of insn.priority because
         # pytools.graph.compute_topological_order schedules the nodes with
         # lower 'key' first in case of a tie.
@@ -748,7 +742,10 @@ def get_insns_in_topologically_sorted_order(
 
 # {{{ schedule_as_many_run_insns_as_possible
 
-def schedule_as_many_run_insns_as_possible(sched_state, template_insn):
+def schedule_as_many_run_insns_as_possible(
+            sched_state: SchedulerState,
+            template_insn: InstructionBase
+        ):
     """
     Returns an instance of :class:`loopy.schedule.SchedulerState`, by appending
     all reachable instructions that are similar to *template_insn*. We define
@@ -776,7 +773,7 @@ def schedule_as_many_run_insns_as_possible(sched_state, template_insn):
 
     # }}}
 
-    preschedule = sched_state.preschedule[:]
+    preschedule = list(sched_state.preschedule)
     have_inames = template_insn.within_inames - sched_state.concurrent_inames
     toposorted_insns = sched_state.insns_in_topologically_sorted_order
 
@@ -787,7 +784,7 @@ def schedule_as_many_run_insns_as_possible(sched_state, template_insn):
                 if sched_state.preschedule
                 else None)
 
-    def is_similar_to_template(insn):
+    def is_similar_to_template(insn: InstructionBase):
         if ((insn.within_inames - sched_state.concurrent_inames)
                 != have_inames):
             # sched_state.concurrent_inames contains inames for which no
@@ -802,11 +799,11 @@ def schedule_as_many_run_insns_as_possible(sched_state, template_insn):
 
     # select the top instructions in toposorted_insns only which have active
     # inames corresponding to those of sched_state
-    newly_scheduled_insn_ids = []
-    ignored_unscheduled_insn_ids = set()
+    newly_scheduled_insn_ids: list[InsnId] = []
+    ignored_unscheduled_insn_ids: set[InsnId] = set()
 
     # left_over_toposorted_insns: unscheduled insns in a topologically sorted order
-    left_over_toposorted_insns = []
+    left_over_toposorted_insns: list[InstructionBase] = []
 
     for i, insn in enumerate(toposorted_insns):
         assert insn.id not in sched_state.scheduled_insn_ids
@@ -842,7 +839,7 @@ def schedule_as_many_run_insns_as_possible(sched_state, template_insn):
     sched_items = tuple(RunInstruction(insn_id=insn_id) for insn_id in
             newly_scheduled_insn_ids)
 
-    updated_schedule = sched_state.schedule + sched_items
+    updated_schedule = [*sched_state.schedule, *sched_items]
     updated_scheduled_insn_ids = (sched_state.scheduled_insn_ids
             | frozenset(newly_scheduled_insn_ids))
     updated_unscheduled_insn_ids = (
@@ -851,7 +848,7 @@ def schedule_as_many_run_insns_as_possible(sched_state, template_insn):
     new_insn_ids_to_try = (None if newly_scheduled_insn_ids
             else sched_state.insn_ids_to_try)
 
-    new_active_group_counts = sched_state.active_group_counts.copy()
+    new_active_group_counts = dict(sched_state.active_group_counts)
     if newly_scheduled_insn_ids:
         # all the newly scheduled insns belong to the same groups as
         # template_insn
@@ -937,10 +934,6 @@ def _generate_loop_schedules_v2(kernel: LoopKernel) -> Sequence[ScheduleItem]:
 
     # loop_inames: inames that are realized as loops. Concurrent inames aren't
     # realized as a loop in the generated code for a loopy.TargetBase.
-
-    # FIXME: These three could be one statement if it weren't for
-    # - https://github.com/python/mypy/issues/17693
-    # - https://github.com/python/mypy/issues/17694
     emptyset: frozenset[InameStr] = frozenset()
     all_inames = reduce(
                         frozenset.union,
@@ -1043,8 +1036,8 @@ def _generate_loop_schedules_internal(
     # allow_insn is set to False initially and after entering each loop
     # to give loops containing high-priority instructions a chance.
     kernel = sched_state.kernel
-    Fore = kernel.options._fore  # noqa
-    Style = kernel.options._style  # noqa
+    Fore = kernel.options._fore  # noqa: N806
+    Style = kernel.options._style  # noqa: N806
 
     active_inames_set = frozenset(sched_state.active_inames)
 
@@ -2407,7 +2400,7 @@ def _get_one_linearized_kernel_inner(
     # out of scope after the function returns. This allows it to be
     # garbage-collected in the exit handler of the
     # MinRecursionLimitForScheduling context manager in the surrounding
-    # function, because it possilby cannot be safely collected with a lower
+    # function, because it possibly cannot be safely collected with a lower
     # recursion limit without crashing the Python runtime.
     #
     # See https://gitlab.tiker.net/inducer/sumpy/issues/31 for context.

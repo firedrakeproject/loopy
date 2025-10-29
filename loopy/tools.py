@@ -88,13 +88,13 @@ class LoopyKeyBuilder(KeyBuilderBase):
     update_for_dict = KeyBuilderBase.update_for_constantdict
     update_for_defaultdict = KeyBuilderBase.update_for_constantdict
 
-    def update_for_BasicSet(self, key_hash, key):  # noqa
+    def update_for_BasicSet(self, key_hash, key):  # noqa: N802
         from islpy import Printer
         prn = Printer.to_str(key.get_ctx())
         getattr(prn, "print_"+key._base_name)(key)
         key_hash.update(prn.get_str().encode("utf8"))
 
-    def update_for_Map(self, key_hash, key):  # noqa
+    def update_for_Map(self, key_hash, key):  # noqa: N802
         if isinstance(key, isl.Map):
             self.update_for_BasicSet(key_hash, key)
         else:
@@ -523,7 +523,7 @@ class LazilyUnpicklingListWithEqAndPersistentHashing(LazilyUnpicklingList[V]):
         if len(self) != len(other):
             return False
 
-        for a, b in zip(self._list, other):
+        for a, b in zip(self._list, other, strict=True):
             if self._get_eq_key(a) != self._get_eq_key(b):
                 return False
 
@@ -547,7 +547,7 @@ class LazilyUnpicklingListWithEqAndPersistentHashing(LazilyUnpicklingList[V]):
 
 # {{{ optional object
 
-class _no_value:  # noqa
+class _no_value:  # noqa: N801
     pass
 
 

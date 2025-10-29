@@ -100,7 +100,7 @@ def _find_fusable_loop_domain_index(domain, other_domains):
 
 # {{{ generic merge helpers
 
-T  = TypeVar("T")
+T = TypeVar("T")
 
 
 def _ordered_merge_lists(list_a: Sequence[T], list_b: Sequence[T]) -> list[T]:
@@ -194,14 +194,11 @@ def _fuse_two_kernels(kernela: LoopKernel, kernelb: LoopKernel):
 
             new_args.append(b_arg.copy(name=new_arg_name))
         else:
-            if b_arg != kernela.arg_dict[b_arg.name]:
+            a_arg = kernela.arg_dict[b_arg.name]
+            if b_arg != a_arg:
                 raise LoopyError(
-                        "argument '{arg_name}' has inconsistent definition between "
-                        "the two kernels being merged ({arg_a} <-> {arg_b})"
-                        .format(
-                            arg_name=b_arg.name,
-                            arg_a=str(kernela.arg_dict[b_arg.name]),
-                            arg_b=str(b_arg)))
+                        f"argument '{b_arg.name}' has inconsistent definition between "
+                        f"the two kernels being merged ({a_arg} <-> {b_arg})")
 
     # }}}
 
@@ -403,7 +400,7 @@ def fuse_kernels(kernels, suffixes=None, data_flow=None):
         merge_sets = partial(reduce, or_)
 
         new_kernels = []
-        for i, (kernel, suffix) in enumerate(zip(kernels, suffixes)):
+        for i, (kernel, suffix) in enumerate(zip(kernels, suffixes, strict=True)):
             new_kernels.append(
                     _rename_temporaries(
                         kernel,
